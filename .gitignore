@@ -15,7 +15,7 @@ __pycache__/
 .vscode/
 
 # Plik ze zmiennymi środowiskowymi
-.env
+*.env
 
 # Folder z plikami tymczasowymi
 tmp/
