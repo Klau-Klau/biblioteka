@@ -1,0 +1,21 @@
+# Katalog środowiska wirtualnego
+venv/
+*.pyc
+
+# Kompilacja Pythona
+__pycache__/
+
+# Pliki konfiguracyjne IDE PyCharm
+.idea/
+
+# Pliki konfiguracyjne systemu macOS
+.DS_Store
+
+# Pliki konfiguracyjne Visual Studio Code
+.vscode/
+
+# Plik ze zmiennymi środowiskowymi
+.env
+
+# Folder z plikami tymczasowymi
+tmp/
