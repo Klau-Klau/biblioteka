@@ -4,6 +4,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.mysql import YEAR as Year
 from sqlalchemy.orm import relationship, Session
+from werkzeug.security import generate_password_hash, check_password_hash
 
 Base = declarative_base()
 
@@ -20,8 +21,27 @@ class User(Base):
     surname = Column(String(50), nullable=False)
     email = Column(String(100), nullable=False)
     password = Column(String(255), nullable=False)
-    role = Column(Enum('czytelnik', 'pracownik'), nullable=False)
+    role = Column(Enum('czytelnik', 'pracownik'), default='czytelnik', nullable=False)
     registration_date = Column(DateTime, default=func.current_timestamp(), nullable=False)
+
+    def set_password(self, password):
+        self.password = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password, password)
+
+    # Metody Flask-Login
+    def is_authenticated(self):
+        return True
+
+    def is_active(self):
+        return True
+
+    def is_anonymous(self):
+        return False
+
+    def get_id(self):
+        return str(self.id)
 
 class Book(Base):
     __tablename__ = 'books'
