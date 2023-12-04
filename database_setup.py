@@ -2,16 +2,15 @@ from sqlalchemy import create_engine, ForeignKey, Numeric, text
 from sqlalchemy import Column, Integer, String, DateTime, Enum, Text
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.mysql import YEAR as Year
 from sqlalchemy.orm import relationship, Session
 from werkzeug.security import generate_password_hash, check_password_hash
 
 Base = declarative_base()
 
-
 # Uwaga: Zastąp 'username', 'password', 'host' i 'database_name' właściwymi wartościami
 DATABASE_URI = 'mysql+pymysql://root:Maria@localhost:80/library'
 engine = create_engine(DATABASE_URI, echo=True)
+
 
 class User(Base):
     __tablename__ = 'users'
@@ -53,7 +52,7 @@ class Book(Base):
     genre = Column(String(100), nullable=False)
     status = Column(Enum('dostępna', 'wypożyczona', 'zarezerwowana'), nullable=False)
     description = Column(Text, nullable=True)  # TEXT może być NULL, jeśli opis książki nie jest wymagany
-    publication_year = Column(Year, nullable=False)
+    publication_year = Column(Integer, nullable=False)
 
 
 class Loan(Base):

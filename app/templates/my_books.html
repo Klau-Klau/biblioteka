@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Moje Książki</title>
+    <!-- Dodaj linki do CSS jeśli potrzebujesz -->
+</head>
+<body>
+    <h1>Moje Zarezerwowane Książki</h1>
+    <ul>
+        {% for book in reserved_books %}
+            <li>{{ book.title }} by {{ book.author }}</li>
+        {% endfor %}
+    </ul>
+
+    <h1>Moje Wypożyczone Książki</h1>
+    <ul>
+        {% for book in loaned_books %}
+            <li>{{ book.title }} - {{ book.author }}</li>
+        {% endfor %}
+    </ul>
+</body>
+</html>

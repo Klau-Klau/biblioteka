@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Książka gotowa do odbioru</title>
+    <!-- Dodaj linki do CSS jeśli potrzebujesz -->
+</head>
+<body>
+    <h1>Książka gotowa do odbioru</h1>
+
+    <!-- Sekcja do wyświetlania komunikatów flash -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+    {% endwith %}
+
+    <form action="{{ url_for('loan_book') }}" method="post">
+        <p>
+            <label for="book_id">ID Książki:</label><br>
+            <input type="text" id="book_id" name="book_id" required>
+        </p>
+        <p>
+            <input type="submit" value="Zatwierdź">
+        </p>
+    </form>
+</body>
+</html>
