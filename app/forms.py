@@ -1,6 +1,6 @@
 from flask_wtf import FlaskForm
-from wtforms import StringField, PasswordField, SubmitField, ValidationError
-from wtforms.validators import DataRequired, Email, Length, EqualTo
+from wtforms import StringField, PasswordField, SubmitField, ValidationError, BooleanField
+from wtforms.validators import DataRequired, Email, Length, EqualTo, Optional
 
 
 # Walidator, który sprawdza, czy dane pole składa się wyłącznie z wielkich liter
@@ -25,3 +25,28 @@ class RegistrationForm(FlaskForm):
         Length(min=6, message='Hasło musi mieć przynajmniej 6 znaków.')
     ])
     submit = SubmitField('Zarejestruj')
+
+
+class EditUserForm(FlaskForm):
+    name = StringField('Imię', validators=[DataRequired()])
+    surname = StringField('Nazwisko', validators=[DataRequired()])
+    email = StringField('Email', validators=[DataRequired(), Email()])
+    change_password = BooleanField('Zmień hasło')
+    password = PasswordField('Nowe hasło', validators=[Optional(), Length(min=6)])
+    confirm_password = PasswordField('Potwierdź nowe hasło', validators=[EqualTo('password', message='Hasła muszą się zgadzać')])
+    submit = SubmitField('Zaktualizuj')
+
+
+class EditUserEmployee(FlaskForm):
+    name = StringField('Imię', validators=[DataRequired()])
+    surname = StringField('Nazwisko', validators=[DataRequired()])
+    change_password = BooleanField('Zmień hasło')
+    password = PasswordField('Nowe hasło', validators=[Optional(), Length(min=6)])
+    confirm_password = PasswordField('Potwierdź nowe hasło',validators=[EqualTo('password', message='Hasła muszą się zgadzać')])
+    submit = SubmitField('Zaktualizuj')
+
+
+class EditPasswordForm(FlaskForm):
+    old_password = PasswordField('Stare hasło', validators=[DataRequired()])
+    new_password = PasswordField('Nowe hasło', validators=[DataRequired(), Length(min=6)])
+    submit = SubmitField('Zmień hasło')

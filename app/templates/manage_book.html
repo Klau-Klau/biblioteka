@@ -1,0 +1,36 @@
+<!-- templates/manage_books.html -->
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Zarządzanie książkami</title>
+    <!-- Dodaj linki do CSS jeśli potrzebujesz -->
+</head>
+<body>
+    <h1>Zarządzanie książkami</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+    {% endwith %}
+
+    <ul>
+        {% for book in books %}
+        <li>
+            {{ book.title }} - {{ book.author }}
+            {% if book.status == 'dostępna' %}
+            <form action="{{ url_for('delete_book', book_id=book.id) }}" method="post">
+                <input type="submit" value="Usuń" onclick="return confirm('Czy na pewno chcesz usunąć tę książkę?');">
+            </form>
+            {% elif book.status == 'wypożyczona' %}
+            <form action="{{ url_for('return_book', book_id=book.id) }}" method="post">
+                <input type="submit" value="Zwrot książki">
+            </form>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>

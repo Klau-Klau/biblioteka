@@ -4,7 +4,9 @@ from werkzeug.security import generate_password_hash
 import os
 from database_setup import User, engine, Book, Reservation, Loan
 from sqlalchemy.orm import scoped_session, sessionmaker
-from app.forms import LoginForm, RegistrationForm
+from app.forms import LoginForm, RegistrationForm, EditUserForm, EditPasswordForm, EditUserEmployee
+from datetime import datetime, timedelta
+from sqlalchemy import or_
 
 
 template_dir = os.path.abspath('./app/templates')
@@ -162,8 +164,16 @@ def loan_book():
         if reservation:
             reservation.status = 'zakończona'
 
+        # Ustawienie terminu zwrotu na 3 miesiące do przodu
+        due_date = datetime.now() + timedelta(days=90)
+
         # Dodanie wpisu do tabeli loans
-        new_loan = Loan(user_id=reservation.user_id if reservation else None, book_id=book_id, status='w trakcie')
+        new_loan = Loan(
+            user_id=reservation.user_id if reservation else None,
+            book_id=book_id,
+            status='w trakcie',
+            due_date=due_date
+        )
         db_session.add(new_loan)
 
         db_session.commit()
@@ -185,6 +195,214 @@ def my_books():
     loaned_books = db_session.query(Book).join(Loan).filter(Loan.user_id == user_id, Loan.status == 'w trakcie').all()
 
     return render_template('my_books.html', reserved_books=reserved_books, loaned_books=loaned_books)
+
+
+@app.route('/add_book', methods=['GET', 'POST'])
+@login_required
+def add_book():
+    if current_user.role != 'pracownik':
+        flash('Tylko pracownicy mogą dodać książki.', 'warning')
+        return redirect(url_for('index'))
+
+    if request.method == 'POST':
+        # Pobierz dane z formularza
+        isbn = request.form.get('isbn')
+        title = request.form.get('title')
+        author = request.form.get('author')
+        genre = request.form.get('genre')
+        description = request.form.get('description')
+        publication_year = request.form.get('publication_year')
+
+        # Stwórz nowy obiekt Book
+        new_book = Book(
+            ISBN=isbn,
+            title=title,
+            author=author,
+            genre=genre,
+            description=description,
+            publication_year=publication_year,
+            status='dostępna'  # Domyślny status dla nowo dodanej książki
+        )
+
+        # Dodaj książkę do sesji i zapisz zmiany w bazie danych
+        db_session.add(new_book)
+        db_session.commit()
+        flash('Książka została pomyślnie dodana.', 'success')
+        return redirect(url_for('index'))
+
+    # GET - wyświetl formularz dodawania książki
+    return render_template('add_book.html')
+
+
+@app.route('/edit_book/<int:book_id>', methods=['GET', 'POST'])
+@login_required
+def edit_book(book_id):
+    # Ograniczenie dostępu tylko dla pracowników
+    if current_user.role != 'pracownik':
+        flash('Tylko pracownicy mogą edytować książki.', 'warning')
+        return redirect(url_for('index'))
+
+    book = db_session.query(Book).get(book_id)
+    if book is None:
+        flash('Książka nie została znaleziona.', 'danger')
+        return redirect(url_for('index'))
+
+    if request.method == 'POST':
+        # Aktualizacja danych książki z formularza
+        book.ISBN = request.form.get('isbn')
+        book.title = request.form.get('title')
+        book.author = request.form.get('author')
+        book.genre = request.form.get('genre')
+        book.description = request.form.get('description')
+        book.publication_year = request.form.get('publication_year')
+
+        db_session.commit()
+        flash('Książka została zaktualizowana.', 'success')
+        return redirect(url_for('my_books'))
+
+    # GET - wyświetlenie danych książki w formularzu
+    return render_template('edit_book.html', book=book)
+
+
+@app.route('/delete_book/<int:book_id>', methods=['POST'])
+@login_required
+def delete_book(book_id):
+    if current_user.role != 'pracownik':
+        flash('Tylko pracownicy mogą usuwać książki.', 'warning')
+        return redirect(url_for('index'))
+
+    book = db_session.query(Book).get(book_id)
+    if book is None:
+        flash('Książka nie została znaleziona.', 'danger')
+        return redirect(url_for('index'))
+
+    if book.status != 'dostępna':
+        flash('Tylko książki o statusie "dostępna" mogą być usunięte.', 'danger')
+        return redirect(url_for('index'))
+
+    db_session.delete(book)
+    db_session.commit()
+    flash('Książka została usunięta.', 'success')
+    return redirect(url_for('index'))
+
+
+@app.route('/manage_book')
+@login_required
+def manage_books():
+    if current_user.role != 'pracownik':
+        flash('Brak dostępu.', 'warning')
+        return redirect(url_for('index'))
+
+    books = db_session.query(Book).all()
+    return render_template('manage_book.html', books=books)
+
+
+@app.route('/return_book/<int:book_id>', methods=['POST'])
+@login_required
+def return_book(book_id):
+    if current_user.role != 'pracownik':
+        flash('Tylko pracownicy mogą zarządzać zwrotami książek.', 'warning')
+        return redirect(url_for('manage_books'))
+
+    book = db_session.query(Book).get(book_id)
+    if not book:
+        flash('Książka nie została znaleziona.', 'danger')
+        return redirect(url_for('manage_books'))
+
+    loan = db_session.query(Loan).filter(
+        Loan.book_id == book.id,
+        or_(Loan.status == 'w trakcie', Loan.status == 'książka przetrzymana')
+    ).first()
+    if loan:
+        loan.status = 'zakończone'
+        loan.return_date = datetime.utcnow()
+        book.status = 'dostępna'
+        db_session.commit()
+        flash(f'Książka "{book.title}" została zwrócona i jest teraz dostępna.', 'success')
+    else:
+        flash(f'Brak aktywnego wypożyczenia dla książki "{book.title}".', 'warning')
+
+    return redirect(url_for('manage_books'))
+
+
+@app.route('/user_profile/<int:user_id>', methods=['GET'])
+@login_required
+def user_profile(user_id):
+    # Jeśli zalogowany użytkownik jest czytelnikiem i próbuje zobaczyć profil innego użytkownika
+    if current_user.role == 'czytelnik' and current_user.id != user_id:
+        flash('Nie masz uprawnień do wyświetlenia tego profilu.', 'danger')
+        return redirect(url_for('index'))
+
+    # Pobranie danych użytkownika z bazy danych
+    user = db_session.query(User).get(user_id)
+
+    if user is None:
+        flash('Użytkownik nie został znaleziony.', 'danger')
+        return redirect(url_for('index'))
+
+    # Przekazujemy tylko bezpieczne dane, bez hasła
+    user_data = {
+        'name': user.name,
+        'surname': user.surname,
+        'email': user.email,
+        'role': user.role
+    }
+
+    return render_template('user_profile.html', user=user_data)
+
+
+@app.route('/edit_user/<int:user_id>', methods=['GET', 'POST'])
+@login_required
+def edit_user(user_id):
+    user = db_session.query(User).get(user_id)
+    if user is None:
+        flash('Użytkownik nie został znaleziony.', 'danger')
+        return redirect(url_for('index'))
+
+    is_editing_self = current_user.id == user_id
+    is_staff = current_user.role == 'pracownik'
+    is_reader_editing_self = current_user.role == 'czytelnik' and is_editing_self
+
+    if is_staff and not is_editing_self:
+        form = EditUserForm(obj=user)  # Pracownik edytuje czytelnika
+    elif is_staff and is_editing_self:
+        form = EditUserEmployee(obj=user)  # Pracownik edytuje siebie
+    elif is_reader_editing_self:
+        form = EditUserForm(obj=user)  # Czytelnik edytuje siebie
+    else:
+        flash('Nie masz uprawnień do edycji tego użytkownika.', 'danger')
+        return redirect(url_for('index'))
+
+    if form.validate_on_submit():
+        user.name = form.name.data
+        user.surname = form.surname.data
+
+        if is_staff or is_reader_editing_self:
+            user.email = form.email.data
+
+        if is_editing_self and form.change_password.data:
+            user.password = generate_password_hash(form.password.data)
+
+        db_session.commit()
+        flash('Dane użytkownika zostały zaktualizowane.', 'success')
+        return redirect(url_for('edit_user', user_id=user_id))
+
+    return render_template('edit_user.html', form=form, user_id=user_id, is_editing_self=is_editing_self, is_staff=is_staff)
+
+
+@app.route('/edit_password', methods=['GET', 'POST'])
+@login_required
+def edit_password():
+    form = EditPasswordForm()
+    if form.validate_on_submit():
+        if current_user.check_password(form.old_password.data):
+            current_user.password = generate_password_hash(form.new_password.data)
+            db_session.commit()
+            flash('Hasło zostało zmienione.', 'success')
+            return redirect(url_for('index'))
+        else:
+            flash('Błędne stare hasło.', 'danger')
+    return render_template('edit_password.html', form=form)
 
 
 # To powinno być na samym końcu pliku
