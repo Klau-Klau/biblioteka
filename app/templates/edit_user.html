@@ -33,8 +33,7 @@
             {% endif %}
         </div>
 
-        <!-- Warunkowe wyświetlanie pola e-mail -->
-        {% if is_staff and not is_editing_self %}
+        {% if (not is_staff and is_editing_self) or (is_staff and not is_target_user_staff) %}
         <div>
             {{ form.email.label }}
             {{ form.email(size=32) }}
@@ -44,15 +43,13 @@
         </div>
         {% endif %}
 
-
-        <!-- Opcja zmiany hasła dla edytującego swoje dane -->
         {% if is_editing_self %}
             <div>
-                {{ form.change_password.label }}
-                {{ form.change_password() }}
+                {{ form.change_password.label(class="checkbox-label") }}
+                {{ form.change_password(id="change-password-checkbox") }}
             </div>
 
-            {% if form.change_password.data %}
+            <div class="password-fields" style="display: none;">
                 <div>
                     {{ form.password.label }}
                     {{ form.password(size=32) }}
@@ -68,12 +65,27 @@
                         <div style="color: red;">{{ form.confirm_password.errors[0] }}</div>
                     {% endif %}
                 </div>
-            {% endif %}
+            </div>
         {% endif %}
 
         <div>
             {{ form.submit() }}
         </div>
     </form>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            var checkbox = document.getElementById('change-password-checkbox');
+            var passwordFields = document.querySelector('.password-fields');
+
+            checkbox.addEventListener('change', function() {
+                if (checkbox.checked) {
+                    passwordFields.style.display = 'block';
+                } else {
+                    passwordFields.style.display = 'none';
+                }
+            });
+        });
+    </script>
 </body>
 </html>

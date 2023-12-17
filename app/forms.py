@@ -37,6 +37,13 @@ class EditUserForm(FlaskForm):
     submit = SubmitField('Zaktualizuj')
 
 
+class EditUserFormByStaff(FlaskForm):
+    name = StringField('Imię', validators=[DataRequired()])
+    surname = StringField('Nazwisko', validators=[DataRequired()])
+    email = StringField('Email', validators=[DataRequired(), Email()])
+    submit = SubmitField('Zaktualizuj')
+
+
 class EditUserEmployee(FlaskForm):
     name = StringField('Imię', validators=[DataRequired()])
     surname = StringField('Nazwisko', validators=[DataRequired()])

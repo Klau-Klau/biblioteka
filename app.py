@@ -4,7 +4,7 @@ from werkzeug.security import generate_password_hash
 import os
 from database_setup import User, engine, Book, Reservation, Loan
 from sqlalchemy.orm import scoped_session, sessionmaker
-from app.forms import LoginForm, RegistrationForm, EditUserForm, EditPasswordForm, EditUserEmployee
+from app.forms import LoginForm, RegistrationForm, EditUserForm, EditPasswordForm, EditUserEmployee, EditUserFormByStaff
 from datetime import datetime, timedelta
 from sqlalchemy import or_
 
@@ -361,14 +361,21 @@ def edit_user(user_id):
 
     is_editing_self = current_user.id == user_id
     is_staff = current_user.role == 'pracownik'
-    is_reader_editing_self = current_user.role == 'czytelnik' and is_editing_self
+    is_target_user_staff = user.role == 'pracownik'
 
-    if is_staff and not is_editing_self:
-        form = EditUserForm(obj=user)  # Pracownik edytuje czytelnika
-    elif is_staff and is_editing_self:
-        form = EditUserEmployee(obj=user)  # Pracownik edytuje siebie
-    elif is_reader_editing_self:
-        form = EditUserForm(obj=user)  # Czytelnik edytuje siebie
+    # Pracownik edytuje siebie
+    if is_staff and is_editing_self:
+        form = EditUserEmployee(obj=user)  # Formularz bez pola e-mail
+    # Pracownik edytuje innego pracownika
+    elif is_staff and is_target_user_staff:
+        flash('Nie masz uprawnień do edycji tego użytkownika.', 'danger')
+        return redirect(url_for('index'))
+    # Pracownik edytuje innego użytkownika
+    elif is_staff and not is_editing_self:
+        form = EditUserFormByStaff(obj=user)
+    # Czytelnik edytuje siebie
+    elif not is_staff and is_editing_self:
+        form = EditUserForm(obj=user)
     else:
         flash('Nie masz uprawnień do edycji tego użytkownika.', 'danger')
         return redirect(url_for('index'))
@@ -377,7 +384,8 @@ def edit_user(user_id):
         user.name = form.name.data
         user.surname = form.surname.data
 
-        if is_staff or is_reader_editing_self:
+        # Zmiana e-maila tylko dla czytelnika edytującego swoje dane
+        if not is_staff:
             user.email = form.email.data
 
         if is_editing_self and form.change_password.data:
@@ -387,22 +395,10 @@ def edit_user(user_id):
         flash('Dane użytkownika zostały zaktualizowane.', 'success')
         return redirect(url_for('edit_user', user_id=user_id))
 
-    return render_template('edit_user.html', form=form, user_id=user_id, is_editing_self=is_editing_self, is_staff=is_staff)
+    # Przekazanie dodatkowej zmiennej do szablonu, aby kontrolować wyświetlanie pola e-mail
+    return render_template('edit_user.html', form=form, user_id=user_id, is_editing_self=is_editing_self, is_staff=is_staff, is_target_user_staff=is_target_user_staff)
 
 
-@app.route('/edit_password', methods=['GET', 'POST'])
-@login_required
-def edit_password():
-    form = EditPasswordForm()
-    if form.validate_on_submit():
-        if current_user.check_password(form.old_password.data):
-            current_user.password = generate_password_hash(form.new_password.data)
-            db_session.commit()
-            flash('Hasło zostało zmienione.', 'success')
-            return redirect(url_for('index'))
-        else:
-            flash('Błędne stare hasło.', 'danger')
-    return render_template('edit_password.html', form=form)
 
 
 # To powinno być na samym końcu pliku
