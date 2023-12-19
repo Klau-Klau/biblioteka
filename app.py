@@ -2,9 +2,9 @@ from flask import Flask, redirect, url_for, render_template, flash, request, jso
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash
 import os
-from database_setup import User, engine, Book, Reservation, Loan
-from sqlalchemy.orm import scoped_session, sessionmaker
-from app.forms import LoginForm, RegistrationForm, EditUserForm, EditPasswordForm, EditUserEmployee, EditUserFormByStaff
+from database_setup import User, engine, Book, Reservation, Loan, BookCopy
+from sqlalchemy.orm import scoped_session, sessionmaker, joinedload
+from app.forms import LoginForm, RegistrationForm, EditUserForm, EditUserEmployee, EditUserFormByStaff
 from datetime import datetime, timedelta
 from sqlalchemy import or_
 
@@ -40,7 +40,6 @@ def login():
         else:
             flash('Nieprawidłowy email lub hasło.', 'danger')  # Dodany komunikat
     return render_template('login.html', form=form)
-
 
 
 db_session = scoped_session(sessionmaker(bind=engine))
@@ -106,32 +105,29 @@ def search_books():
 @app.route('/reserve_book', methods=['POST'])
 @login_required
 def reserve_book():
-    book_id = request.form.get('book_id')
+    book_copy_id = request.form.get('id')  # Pobieranie id egzemplarza książki
 
-    # Pobranie książki z bazy danych
-    book = db_session.query(Book).filter_by(id=book_id).first()
+    # Przygotowanie zapytania
+    query = db_session.query(BookCopy).filter_by(id=book_copy_id, status='dostępna')
+    print(query)  # Wypisanie zapytania SQL dla celów debugowania
+    book_copy = query.first()
 
-    if not book:
-        return jsonify({'message': 'Książka nie znaleziona'}), 404
+    if not book_copy:
+        return jsonify({'message': 'Książka nie znaleziona lub żaden egzemplarz nie jest dostępny'}), 404
 
-    if book.status not in ['dostępna']:
-        return jsonify({'message': 'Ksiazka jest juz zarezerwowana lub wypozyczona'}), 400
-
-    # Zmiana statusu książki
-    book.status = 'zarezerwowana'
+    # Zmiana statusu egzemplarza książki
+    book_copy.status = 'zarezerwowana'
 
     # Utworzenie rezerwacji
     reservation = Reservation(
         user_id=current_user.id,
-        book_id=book_id,
+        book_id=book_copy.id,  # Używamy book_id jako klucza obcego do egzemplarza książki
         status='aktywna'
     )
     db_session.add(reservation)
-
-    # Zapisanie zmian
     db_session.commit()
 
-    return jsonify({'message': 'Rezerwacja zostala pomyslnie utworzona'}), 200
+    return jsonify({'message': 'Rezerwacja została pomyślnie utworzona'}), 200
 
 
 @app.route('/reserve', methods=['GET'])
@@ -143,6 +139,7 @@ def show_reserve_form():
         flash('Tylko czytelnicy mogą rezerwować książki.', 'warning')
         return redirect(url_for('index'))
 
+
 @app.route('/mark_as_loan', methods=['GET', 'POST'])
 @login_required
 def loan_book():
@@ -152,15 +149,15 @@ def loan_book():
 
     if request.method == 'POST':
         book_id = request.form.get('book_id')
-        book = db_session.query(Book).filter_by(id=book_id).first()
-        reservation = db_session.query(Reservation).filter_by(book_id=book_id, status='aktywna').first()
+        book_copy = db_session.query(BookCopy).filter_by(id=book_id, status='zarezerwowana').first()
 
-        if not book or book.status != 'zarezerwowana':
+        if not book_copy:
             flash('Nie można wypożyczyć tej książki.', 'danger')
             return redirect(url_for('loan_book'))
 
-        # Aktualizacja statusu książki i rezerwacji
-        book.status = 'wypożyczona'
+        # Aktualizacja statusu egzemplarza książki i rezerwacji
+        book_copy.status = 'wypożyczona'
+        reservation = db_session.query(Reservation).filter_by(book_id=book_id, status='aktywna').first()
         if reservation:
             reservation.status = 'zakończona'
 
@@ -170,31 +167,69 @@ def loan_book():
         # Dodanie wpisu do tabeli loans
         new_loan = Loan(
             user_id=reservation.user_id if reservation else None,
-            book_id=book_id,
+            book_id=book_id,  # Używamy klucza obcego odnoszącego się do egzemplarza
             status='w trakcie',
             due_date=due_date
         )
         db_session.add(new_loan)
-
         db_session.commit()
         flash('Książka została wypożyczona.', 'success')
         return redirect(url_for('index'))
 
+    # W przeciwnym razie (GET) wyświetl formularz wypożyczenia
+    # Tutaj powinien być kod do obsługi GET, na przykład wyświetlenie formularza
+    # z możliwymi do wypożyczenia egzemplarzami książek.
     return render_template('mark_as_loan.html')
 
 
 @app.route('/my_books')
 @login_required
 def my_books():
-
     if current_user.role != 'czytelnik':
         return redirect(url_for('index'))
 
     user_id = current_user.id
-    reserved_books = db_session.query(Book).join(Reservation).filter(Reservation.user_id == user_id, Reservation.status == 'aktywna').all()
-    loaned_books = db_session.query(Book).join(Loan).filter(Loan.user_id == user_id, Loan.status == 'w trakcie').all()
 
-    return render_template('my_books.html', reserved_books=reserved_books, loaned_books=loaned_books)
+    # Zapytanie o zarezerwowane egzemplarze książek
+    reserved_copies = db_session.query(BookCopy).join(Reservation, BookCopy.id == Reservation.book_id).filter(
+        Reservation.user_id == user_id,
+        Reservation.status == 'aktywna'
+    ).all()
+
+    # Zapytanie o wypożyczone egzemplarze książek
+    loaned_copies = db_session.query(BookCopy).join(Loan, BookCopy.id == Loan.book_id).filter(
+        Loan.user_id == user_id,
+        Loan.status == 'w trakcie'
+    ).all()
+
+    # Przygotowanie danych o zarezerwowanych książkach do wyświetlenia
+    reserved_books_data = [
+        {
+            "title": copy.book.title,
+            "author": copy.book.author,
+            "isbn": copy.book.ISBN,
+            "copy_id": copy.id,
+            "reservation_id": reservation.id
+        }
+        for copy in reserved_copies
+        for reservation in copy.reservations if reservation.status == 'aktywna'
+    ]
+
+    # Przygotowanie danych o wypożyczonych książkach do wyświetlenia
+    loaned_books_data = [
+        {
+            "title": copy.book.title,
+            "author": copy.book.author,
+            "isbn": copy.book.ISBN,
+            "copy_id": copy.id,
+            "loan_id": loan.id,
+            "due_date": loan.due_date
+        }
+        for copy in loaned_copies
+        for loan in copy.loans if loan.status == 'w trakcie'
+    ]
+
+    return render_template('my_books.html', reserved_books=reserved_books_data, loaned_books=loaned_books_data)
 
 
 @app.route('/add_book', methods=['GET', 'POST'])
@@ -207,27 +242,38 @@ def add_book():
     if request.method == 'POST':
         # Pobierz dane z formularza
         isbn = request.form.get('isbn')
-        title = request.form.get('title')
-        author = request.form.get('author')
-        genre = request.form.get('genre')
-        description = request.form.get('description')
-        publication_year = request.form.get('publication_year')
+        tytul = request.form.get('title')
+        autor = request.form.get('author')
+        gatunek = request.form.get('genre')
+        opis = request.form.get('description')
+        rok_wydania = request.form.get('publication_year')
+        ilosc_egzemplarzy = int(request.form.get('quantity', 1))  # domyślnie 1, jeśli nie podano
 
-        # Stwórz nowy obiekt Book
-        new_book = Book(
+        # Stwórz nowy obiekt Book bez statusu
+        nowa_ksiazka = Book(
             ISBN=isbn,
-            title=title,
-            author=author,
-            genre=genre,
-            description=description,
-            publication_year=publication_year,
-            status='dostępna'  # Domyślny status dla nowo dodanej książki
+            title=tytul,
+            author=autor,
+            genre=gatunek,
+            description=opis,
+            publication_year=rok_wydania
         )
 
-        # Dodaj książkę do sesji i zapisz zmiany w bazie danych
-        db_session.add(new_book)
+        # Dodaj książkę do sesji
+        db_session.add(nowa_ksiazka)
+        db_session.flush()  # Przepłukanie sesji, aby otrzymać ID nowej książki
+
+        # Stwórz odpowiednią liczbę obiektów BookCopy
+        for _ in range(ilosc_egzemplarzy):
+            nowy_egzemplarz = BookCopy(
+                book_id=nowa_ksiazka.id,
+                status='dostępna'
+            )
+            db_session.add(nowy_egzemplarz)
+
+        # Zapisz zmiany w bazie danych
         db_session.commit()
-        flash('Książka została pomyślnie dodana.', 'success')
+        flash(f'Książka oraz jej {ilosc_egzemplarzy} egzemplarzy zostały pomyślnie dodane.', 'success')
         return redirect(url_for('index'))
 
     # GET - wyświetl formularz dodawania książki
@@ -264,26 +310,28 @@ def edit_book(book_id):
     return render_template('edit_book.html', book=book)
 
 
-@app.route('/delete_book/<int:book_id>', methods=['POST'])
+@app.route('/delete_book/<int:copy_id>', methods=['POST'])
 @login_required
-def delete_book(book_id):
+def delete_book(copy_id):
     if current_user.role != 'pracownik':
         flash('Tylko pracownicy mogą usuwać książki.', 'warning')
         return redirect(url_for('index'))
 
-    book = db_session.query(Book).get(book_id)
-    if book is None:
-        flash('Książka nie została znaleziona.', 'danger')
-        return redirect(url_for('index'))
+    # Znajdź egzemplarz książki na podstawie ID
+    book_copy = db_session.query(BookCopy).get(copy_id)
+    if book_copy is None:
+        flash('Egzemplarz książki nie został znaleziony.', 'danger')
+        return redirect(url_for('manage_books'))
 
-    if book.status != 'dostępna':
-        flash('Tylko książki o statusie "dostępna" mogą być usunięte.', 'danger')
-        return redirect(url_for('index'))
+    if book_copy.status != 'dostępna':
+        flash('Tylko egzemplarze książek o statusie "dostępna" mogą być usunięte.', 'danger')
+        return redirect(url_for('manage_books'))
 
-    db_session.delete(book)
+    db_session.delete(book_copy)
     db_session.commit()
-    flash('Książka została usunięta.', 'success')
-    return redirect(url_for('index'))
+    flash('Egzemplarz książki został usunięty.', 'success')
+    return redirect(url_for('manage_books'))
+
 
 
 @app.route('/manage_book')
@@ -293,36 +341,52 @@ def manage_books():
         flash('Brak dostępu.', 'warning')
         return redirect(url_for('index'))
 
-    books = db_session.query(Book).all()
-    return render_template('manage_book.html', books=books)
+    # Łączenie książek z ich kopiami i wypożyczeniami
+    books_with_details = db_session.query(Book).options(
+        joinedload(Book.book_copies)
+        .joinedload(BookCopy.loans)
+        .joinedload(Loan.user),
+        joinedload(Book.book_copies)
+        .joinedload(BookCopy.reservations)
+        .joinedload(Reservation.user)
+    ).all()
+
+    return render_template('manage_book.html', books_with_details=books_with_details)
 
 
-@app.route('/return_book/<int:book_id>', methods=['POST'])
+@app.route('/return_book/<int:copy_id>', methods=['POST'])
 @login_required
-def return_book(book_id):
+def return_book(copy_id):
     if current_user.role != 'pracownik':
         flash('Tylko pracownicy mogą zarządzać zwrotami książek.', 'warning')
         return redirect(url_for('manage_books'))
 
-    book = db_session.query(Book).get(book_id)
-    if not book:
-        flash('Książka nie została znaleziona.', 'danger')
+    # Znajdź egzemplarz książki na podstawie ID
+    book_copy = db_session.query(BookCopy).get(copy_id)
+    if not book_copy:
+        flash('Egzemplarz książki nie został znaleziony.', 'danger')
         return redirect(url_for('manage_books'))
 
+    # Znajdź wypożyczenie na podstawie copy_id
     loan = db_session.query(Loan).filter(
-        Loan.book_id == book.id,
-        or_(Loan.status == 'w trakcie', Loan.status == 'książka przetrzymana')
+        Loan.book_id == copy_id,  # to jest poprawne, 'book_id' to klucz obcy w 'Loan' odnoszący się do 'BookCopy'
+        Loan.status.in_(['w trakcie', 'książka przetrzymana'])
     ).first()
+
     if loan:
+        # Zaktualizuj status wypożyczenia i egzemplarza książki
         loan.status = 'zakończone'
         loan.return_date = datetime.utcnow()
-        book.status = 'dostępna'
+        book_copy.status = 'dostępna'
+
         db_session.commit()
-        flash(f'Książka "{book.title}" została zwrócona i jest teraz dostępna.', 'success')
+        flash(f'Egzemplarz książki "{book_copy.book.title}" został zwrócony i jest teraz dostępny.', 'success')
     else:
-        flash(f'Brak aktywnego wypożyczenia dla książki "{book.title}".', 'warning')
+        flash('Brak aktywnego wypożyczenia dla tego egzemplarza książki.', 'warning')
 
     return redirect(url_for('manage_books'))
+
+
 
 
 @app.route('/user_profile/<int:user_id>', methods=['GET'])

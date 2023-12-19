@@ -9,8 +9,8 @@
     <h1>Rezerwacja Książki</h1>
     <form action="{{ url_for('reserve_book') }}" method="post">
         <p>
-            <label for="book_id">ID Książki:</label><br>
-            <input type="text" id="book_id" name="book_id" required>
+            <label for="id">ID Egzemplarza Książki:</label><br>
+            <input type="text" id="id" name="id" required> <!-- Zmieniono nazwę z book_id na id -->
         </p>
         <p>
             <input type="submit" value="Rezerwuj">

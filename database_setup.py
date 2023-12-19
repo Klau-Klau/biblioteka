@@ -42,6 +42,17 @@ class User(Base):
     def get_id(self):
         return str(self.id)
 
+class BookCopy(Base):
+    __tablename__ = 'book_copies'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    book_id = Column(Integer, ForeignKey('books.book_id'), nullable=False)
+    status = Column(Enum('dostępna', 'wypożyczona', 'zarezerwowana'), nullable=False)
+
+    # Relacja z Book
+    book = relationship("Book", back_populates="book_copies")
+
+
 class Book(Base):
     __tablename__ = 'books'
 
@@ -50,9 +61,11 @@ class Book(Base):
     title = Column(String(200), nullable=False)
     author = Column(String(100), nullable=False)
     genre = Column(String(100), nullable=False)
-    status = Column(Enum('dostępna', 'wypożyczona', 'zarezerwowana'), nullable=False)
     description = Column(Text, nullable=True)  # TEXT może być NULL, jeśli opis książki nie jest wymagany
     publication_year = Column(Integer, nullable=False)
+
+    # Nowa relacja do BookCopy
+    book_copies = relationship("BookCopy", order_by=BookCopy.id, back_populates="book")
 
 
 class Loan(Base):
@@ -60,7 +73,7 @@ class Loan(Base):
 
     id = Column('loan_id', Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
-    book_id = Column(Integer, ForeignKey('books.book_id'), nullable=False)
+    book_id = Column(Integer, ForeignKey('book_copies.id'), nullable=False)
     date_of_loan = Column(DateTime, default=func.current_timestamp(), nullable=False)
     due_date = Column(DateTime, nullable=False)
     return_date = Column(DateTime, nullable=True)  # Może być NULL, oznacza to, że książka nie została jeszcze zwrócona
@@ -68,28 +81,28 @@ class Loan(Base):
 
     # Relacje (opcjonalnie, jeśli chcesz mieć dostęp do powiązanych obiektów użytkowników i książek)
     user = relationship("User", back_populates="loans")
-    book = relationship("Book", back_populates="loans")
+    book_copy = relationship("BookCopy", back_populates="loans")  # Zaktualizowana relacja
 
 # Następnie dodaj relacje do klas User i Book (jeśli potrzebujesz nawigować między nimi)
 User.loans = relationship("Loan", order_by=Loan.id, back_populates="user")
-Book.loans = relationship("Loan", order_by=Loan.id, back_populates="book")
+BookCopy.loans = relationship("Loan", order_by=Loan.id, back_populates="book_copy")
 
 class Reservation(Base):
     __tablename__ = 'reservations'
 
     id = Column('reservation_id', Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
-    book_id = Column(Integer, ForeignKey('books.book_id'), nullable=False)
+    book_id = Column(Integer, ForeignKey('book_copies.id'), nullable=False)
     date_of_reservation = Column(DateTime, default=func.current_timestamp(), nullable=False)
     status = Column(Enum('aktywna', 'zakończona', 'anulowana'), nullable=False)
 
     # Relacje
     user = relationship("User", back_populates="reservations")
-    book = relationship("Book", back_populates="reservations")
+    book_copy = relationship("BookCopy", back_populates="reservations")  # Zaktualizowana relacja
 
 # Dodaj relacje do istniejących klas User i Book
 User.reservations = relationship("Reservation", order_by=Reservation.id, back_populates="user")
-Book.reservations = relationship("Reservation", order_by=Reservation.id, back_populates="book")
+BookCopy.reservations = relationship("Reservation", order_by=Reservation.id, back_populates="book_copy")
 
 
 class Payment(Base):
@@ -174,4 +187,3 @@ class Report(Base):
 with Session(engine) as session:
     result = session.execute(text("SELECT 1"))
     print(result.one())
-

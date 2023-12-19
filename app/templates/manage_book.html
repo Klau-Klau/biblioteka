@@ -16,21 +16,28 @@
     {% endif %}
     {% endwith %}
 
+    {% for book in books_with_details %}
+    <h2>{{ book.title }} - {{ book.author }}</h2>
     <ul>
-        {% for book in books %}
+        {% for copy in book.book_copies %}
         <li>
-            {{ book.title }} - {{ book.author }}
-            {% if book.status == 'dostępna' %}
-            <form action="{{ url_for('delete_book', book_id=book.id) }}" method="post">
-                <input type="submit" value="Usuń" onclick="return confirm('Czy na pewno chcesz usunąć tę książkę?');">
-            </form>
-            {% elif book.status == 'wypożyczona' %}
-            <form action="{{ url_for('return_book', book_id=book.id) }}" method="post">
-                <input type="submit" value="Zwrot książki">
-            </form>
+            Egzemplarz nr: {{ loop.index }}, Status: {{ copy.status }}
+            {% if copy.status == 'dostępna' %}
+                <form action="{{ url_for('delete_book', copy_id=copy.id) }}" method="post">
+                    <input type="submit" value="Usuń" onclick="return confirm('Czy na pewno chcesz usunąć ten egzemplarz?');">
+                </form>
+            {% elif copy.status == 'wypożyczona' %}
+                <!-- Szczegóły wypożyczenia i formularz do zwrotu -->
+                <form action="{{ url_for('return_book', copy_id=copy.id) }}" method="post">
+                    <input type="submit" value="Zwrot książki">
+                </form>
+            {% elif copy.status == 'zarezerwowana' %}
+                <!-- Szczegóły rezerwacji -->
+                <p>Rezerwacja do: {{ copy.reservations[0].due_date }} ({{ copy.reservations[0].user.name }})</p>
             {% endif %}
         </li>
         {% endfor %}
     </ul>
+    {% endfor %}
 </body>
 </html>
