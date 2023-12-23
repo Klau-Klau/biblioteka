@@ -1,4 +1,3 @@
-<!-- templates/manage_books.html -->
 <!DOCTYPE html>
 <html lang="pl">
 <head>
@@ -33,7 +32,11 @@
                 </form>
             {% elif copy.status == 'zarezerwowana' %}
                 <!-- Szczegóły rezerwacji -->
-                <p>Rezerwacja do: {{ copy.reservations[0].due_date }} ({{ copy.reservations[0].user.name }})</p>
+                <p>Rezerwacja do: {{ copy.reservations[-1].due_date }} ({{ copy.reservations[-1].user.name }})</p>
+                <!-- Formularz do oznaczenia książki jako gotowej do odbioru -->
+                <form action="{{ url_for('book_ready_for_pickup', copy_id=copy.id) }}" method="post">
+                    <input type="submit" value="Oznacz jako gotową do odbioru">
+                </form>
             {% endif %}
         </li>
         {% endfor %}

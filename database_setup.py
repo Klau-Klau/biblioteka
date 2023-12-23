@@ -1,5 +1,5 @@
 from sqlalchemy import create_engine, ForeignKey, Numeric, text
-from sqlalchemy import Column, Integer, String, DateTime, Enum, Text
+from sqlalchemy import Column, Integer, String, DateTime, Enum, Text, Boolean
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, Session
@@ -10,6 +10,20 @@ Base = declarative_base()
 # Uwaga: Zastąp 'username', 'password', 'host' i 'database_name' właściwymi wartościami
 DATABASE_URI = 'mysql+pymysql://root:Maria@localhost:80/library'
 engine = create_engine(DATABASE_URI, echo=True)
+
+class Reminder(Base):
+    __tablename__ = 'reminders'
+
+    id = Column('reminder_id', Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    book_id = Column(Integer, ForeignKey('book_copies.id'), nullable=False)
+    date_of_sending = Column(DateTime, default=func.current_timestamp(), nullable=False)
+    type = Column(Enum('odbiór', 'zapłata', 'zwrot'), nullable=False)
+
+    # Zmienione relacje - używamy innej nazwy dla backref
+    user = relationship("User", backref="user_reminders")
+    book_copy = relationship("BookCopy", backref="copy_reminders")
+
 
 
 class User(Base):
@@ -22,6 +36,7 @@ class User(Base):
     password = Column(String(255), nullable=False)
     role = Column(Enum('czytelnik', 'pracownik'), default='czytelnik', nullable=False)
     registration_date = Column(DateTime, default=func.current_timestamp(), nullable=False)
+    wants_notifications = Column(Boolean, default=True, nullable=False)
 
     def set_password(self, password):
         self.password = generate_password_hash(password)
@@ -42,15 +57,19 @@ class User(Base):
     def get_id(self):
         return str(self.id)
 
+    reminders = relationship("Reminder", order_by=Reminder.id, back_populates="user")
+
+
 class BookCopy(Base):
     __tablename__ = 'book_copies'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     book_id = Column(Integer, ForeignKey('books.book_id'), nullable=False)
-    status = Column(Enum('dostępna', 'wypożyczona', 'zarezerwowana'), nullable=False)
+    status = Column(Enum('dostępna', 'wypożyczona', 'zarezerwowana', 'do odbioru'), nullable=False)
 
     # Relacja z Book
     book = relationship("Book", back_populates="book_copies")
+    reminders = relationship("Reminder", order_by=Reminder.id, back_populates="book_copy")
 
 
 class Book(Base):
@@ -133,6 +152,7 @@ class Notification(Base):
 
 # Dodaj relację do klasy User
 User.notifications = relationship("Notification", order_by=Notification.id, back_populates="user")
+
 
 class Review(Base):
     __tablename__ = 'reviews'

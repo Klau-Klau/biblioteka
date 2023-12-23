@@ -43,6 +43,16 @@
         </div>
         {% endif %}
 
+        {% if not is_staff %}
+            <div>
+                {{ form.wants_notifications.label }}
+                {{ form.wants_notifications() }}
+                {% if form.wants_notifications.errors %}
+                    <div style="color: red;">{{ form.wants_notifications.errors[0] }}</div>
+                {% endif %}
+            </div>
+        {% endif %}
+
         {% if is_editing_self %}
             <div>
                 {{ form.change_password.label(class="checkbox-label") }}

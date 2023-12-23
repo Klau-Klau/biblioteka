@@ -2,27 +2,37 @@ from flask import Flask, redirect, url_for, render_template, flash, request, jso
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash
 import os
-from database_setup import User, engine, Book, Reservation, Loan, BookCopy
+from database_setup import User, engine, Book, Reservation, Loan, BookCopy, Notification, Reminder
 from sqlalchemy.orm import scoped_session, sessionmaker, joinedload
-from app.forms import LoginForm, RegistrationForm, EditUserForm, EditUserEmployee, EditUserFormByStaff
+from app.forms import LoginForm, RegistrationForm, EditUserForm, EditUserEmployee, EditUserFormByStaff, \
+    SendNotificationForm
 from datetime import datetime, timedelta
-from sqlalchemy import or_
+from celery import Celery
 
 
+# Ustawienia aplikacji Flask
 template_dir = os.path.abspath('./app/templates')
 app = Flask(__name__, template_folder=template_dir)
+app.config.from_pyfile('celeryconfig.py')  # Załaduj konfigurację Celery
+app.secret_key = 'tajny_klucz'
 
-app.secret_key = 'tajny_klucz'  # Ustaw tajny klucz
+# Konfiguracja Celery
+celery_app = Celery(app.import_name, broker=app.config['BROKER_URL'])
+celery_app.conf.update(app.config)
 
+
+# Ustawienia Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
+# Ustawienia bazy danych
 db_session = scoped_session(sessionmaker(bind=engine))
 
 @login_manager.user_loader
 def load_user(user_id):
     return db_session.query(User).get(int(user_id))
+
 
 @app.route('/')
 def index():
@@ -40,9 +50,6 @@ def login():
         else:
             flash('Nieprawidłowy email lub hasło.', 'danger')  # Dodany komunikat
     return render_template('login.html', form=form)
-
-
-db_session = scoped_session(sessionmaker(bind=engine))
 
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -140,6 +147,7 @@ def show_reserve_form():
         return redirect(url_for('index'))
 
 
+
 @app.route('/mark_as_loan', methods=['GET', 'POST'])
 @login_required
 def loan_book():
@@ -148,26 +156,32 @@ def loan_book():
         return redirect(url_for('index'))
 
     if request.method == 'POST':
-        book_id = request.form.get('book_id')
-        book_copy = db_session.query(BookCopy).filter_by(id=book_id, status='zarezerwowana').first()
+        copy_id = request.form.get('copy_id')
+        book_copy = db_session.query(BookCopy).filter_by(id=copy_id, status='do odbioru').first()
 
         if not book_copy:
             flash('Nie można wypożyczyć tej książki.', 'danger')
             return redirect(url_for('loan_book'))
 
-        # Aktualizacja statusu egzemplarza książki i rezerwacji
-        book_copy.status = 'wypożyczona'
-        reservation = db_session.query(Reservation).filter_by(book_id=book_id, status='aktywna').first()
+        # Znajdź aktywną rezerwację dla tego egzemplarza
+        reservation = db_session.query(Reservation).filter_by(book_id=copy_id, status='aktywna').first()
         if reservation:
             reservation.status = 'zakończona'
+            user_id = reservation.user_id
+        else:
+            flash('Brak aktywnej rezerwacji dla tego egzemplarza.', 'warning')
+            return redirect(url_for('loan_book'))
 
-        # Ustawienie terminu zwrotu na 3 miesiące do przodu
+        # Aktualizacja statusu egzemplarza książki
+        book_copy.status = 'wypożyczona'
+
+        # Ustawienie terminu zwrotu
         due_date = datetime.now() + timedelta(days=90)
 
-        # Dodanie wpisu do tabeli loans
+        # Tworzenie wpisu wypożyczenia
         new_loan = Loan(
-            user_id=reservation.user_id if reservation else None,
-            book_id=book_id,  # Używamy klucza obcego odnoszącego się do egzemplarza
+            user_id=user_id,
+            book_id=copy_id,  # Powinno być copy_id, a nie book_id
             status='w trakcie',
             due_date=due_date
         )
@@ -176,10 +190,10 @@ def loan_book():
         flash('Książka została wypożyczona.', 'success')
         return redirect(url_for('index'))
 
-    # W przeciwnym razie (GET) wyświetl formularz wypożyczenia
-    # Tutaj powinien być kod do obsługi GET, na przykład wyświetlenie formularza
-    # z możliwymi do wypożyczenia egzemplarzami książek.
     return render_template('mark_as_loan.html')
+
+
+
 
 
 @app.route('/my_books')
@@ -429,13 +443,13 @@ def edit_user(user_id):
 
     # Pracownik edytuje siebie
     if is_staff and is_editing_self:
-        form = EditUserEmployee(obj=user)  # Formularz bez pola e-mail
-    # Pracownik edytuje innego pracownika
+        form = EditUserEmployee(obj=user)
+    # Pracownik próbuje edytować innego pracownika
     elif is_staff and is_target_user_staff:
-        flash('Nie masz uprawnień do edycji tego użytkownika.', 'danger')
+        flash('Nie masz uprawnień do edycji innego pracownika.', 'danger')
         return redirect(url_for('index'))
-    # Pracownik edytuje innego użytkownika
-    elif is_staff and not is_editing_self:
+    # Pracownik edytuje czytelnika
+    elif is_staff and not is_target_user_staff:
         form = EditUserFormByStaff(obj=user)
     # Czytelnik edytuje siebie
     elif not is_staff and is_editing_self:
@@ -448,10 +462,13 @@ def edit_user(user_id):
         user.name = form.name.data
         user.surname = form.surname.data
 
-        # Zmiana e-maila tylko dla czytelnika edytującego swoje dane
-        if not is_staff:
+        # Zmiana e-maila i opcjonalnie ustawień powiadomień
+        if not is_target_user_staff:
             user.email = form.email.data
+            if hasattr(form, 'wants_notifications'):
+                user.wants_notifications = form.wants_notifications.data
 
+        # Zmiana hasła
         if is_editing_self and form.change_password.data:
             user.password = generate_password_hash(form.password.data)
 
@@ -459,10 +476,131 @@ def edit_user(user_id):
         flash('Dane użytkownika zostały zaktualizowane.', 'success')
         return redirect(url_for('edit_user', user_id=user_id))
 
-    # Przekazanie dodatkowej zmiennej do szablonu, aby kontrolować wyświetlanie pola e-mail
-    return render_template('edit_user.html', form=form, user_id=user_id, is_editing_self=is_editing_self, is_staff=is_staff, is_target_user_staff=is_target_user_staff)
+    # Ustaw wartości formularza dla żądania GET
+    if request.method == 'GET':
+        form.name.data = user.name
+        form.surname.data = user.surname
+        if not is_target_user_staff:
+            form.email.data = user.email
+            if hasattr(form, 'wants_notifications'):
+                form.wants_notifications.data = user.wants_notifications
+
+    return render_template(
+        'edit_user.html',
+        form=form,
+        user_id=user_id,
+        is_editing_self=is_editing_self,
+        is_staff=is_staff,
+        is_target_user_staff=is_target_user_staff
+    )
 
 
+
+
+@app.route('/notifications')
+@login_required
+def notifications():
+    if current_user.role != 'czytelnik':
+        flash('Tylko czytelnicy mogą przeglądać powiadomienia.', 'warning')
+        return redirect(url_for('index'))
+
+    # Pobranie powiadomień
+    user_notifications = db_session.query(Notification).filter_by(user_id=current_user.id).all()
+    # Pobranie przypomnień
+    user_reminders = db_session.query(Reminder).filter_by(user_id=current_user.id).all()
+
+    return render_template('notifications.html', notifications=user_notifications, reminders=user_reminders)
+
+
+
+@app.route('/book_ready_for_pickup/<int:copy_id>', methods=['POST'])
+@login_required
+def book_ready_for_pickup(copy_id):
+    if current_user.role == 'pracownik':
+        book_copy = db_session.query(BookCopy).get(copy_id)
+        if book_copy and book_copy.status == 'zarezerwowana':
+            # Pobranie ID użytkownika, który zarezerwował książkę
+            user_id = book_copy.reservations[-1].user_id  # Zakładamy, że ostatnia rezerwacja jest aktualna
+
+            # Sprawdzenie, czy użytkownik chce otrzymywać powiadomienia
+            user = db_session.query(User).get(user_id)
+            if user and user.wants_notifications:
+                book_copy.status = 'do odbioru'
+                db_session.commit()
+
+                # Utworzenie powiadomienia o odbiorze
+                new_reminder = Reminder(
+                    user_id=user_id,
+                    book_id=copy_id,  # Używamy ID egzemplarza książki
+                    date_of_sending=datetime.now(),
+                    type='odbiór'
+                )
+                db_session.add(new_reminder)
+                db_session.commit()
+                flash('Książka jest gotowa do odbioru.', 'success')
+            else:
+                flash('Użytkownik zrezygnował z otrzymywania powiadomień.', 'info')
+        else:
+            flash('Egzemplarz książki nie został znaleziony lub nie jest zarezerwowany.', 'danger')
+    else:
+        flash('Brak uprawnień.', 'danger')
+    return redirect(url_for('manage_books'))
+
+
+@celery_app.task
+def generate_payment_reminders():
+    overdue_loans = db_session.query(Loan).filter(
+        Loan.status == 'w trakcie',
+        Loan.due_date < datetime.now()
+    ).all()
+
+    for loan in overdue_loans:
+        # Sprawdzenie, czy użytkownik ma włączone otrzymywanie powiadomień
+        user = db_session.query(User).get(loan.user_id)
+        if not user.wants_notifications:
+            continue  # Pomiń użytkownika, jeśli nie chce otrzymywać powiadomień
+
+        # Obliczenie opłaty
+        days_overdue = (datetime.now() - loan.due_date).days - 5
+        fee = max(0, ((days_overdue // 10) + 1) * 5)
+        if fee > 0 and days_overdue % 10 == 6:
+            book = db_session.query(Book).get(loan.book_id)
+            reminder_content = f"Masz do zapłaty {fee} zł za książkę {book.title}"
+            # Dodajemy przypomnienie o zapłacie
+            new_reminder = Reminder(
+                user_id=loan.user_id,
+                book_id=loan.book_id,
+                date_of_sending=datetime.now(),
+                type='zapłata'
+            )
+            db_session.add(new_reminder)
+    db_session.commit()
+
+
+@app.route('/send_notification', methods=['GET', 'POST'])
+@login_required
+def send_notification():
+    if current_user.role != 'pracownik':
+        flash('Tylko pracownicy mogą wysyłać powiadomienia.', 'warning')
+        return redirect(url_for('index'))
+
+    form = SendNotificationForm()
+    form.user_id.choices = [(user.id, user.name) for user in db_session.query(User).filter_by(wants_notifications=True).all()]
+
+    if form.validate_on_submit():
+        user_id = form.user_id.data
+        content = form.content.data
+
+        new_notification = Notification(
+            user_id=user_id,
+            content=content
+        )
+        db_session.add(new_notification)
+        db_session.commit()
+        flash('Powiadomienie zostało wysłane.', 'success')
+        return redirect(url_for('index'))
+
+    return render_template('send_notification.html', form=form)
 
 
 # To powinno być na samym końcu pliku

@@ -17,6 +17,11 @@
     {% endif %}
     {% endwith %}
 
+    <!-- Link do 'Powiadomienia', widoczny tylko dla czytelników -->
+    {% if current_user.is_authenticated and current_user.role == 'czytelnik' %}
+        <p><a href="{{ url_for('notifications') }}">Powiadomienia</a></p>
+    {% endif %}
+
     <!-- Link do 'Moje książki', widoczny tylko dla czytelników -->
     {% if current_user.is_authenticated and current_user.role == 'czytelnik' %}
         <p><a href="{{ url_for('my_books') }}">Moje Książki</a></p>
