@@ -82,6 +82,7 @@ class Book(Base):
     genre = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)  # TEXT może być NULL, jeśli opis książki nie jest wymagany
     publication_year = Column(Integer, nullable=False)
+    quantity = Column(Integer, default=1)
 
     # Nowa relacja do BookCopy
     book_copies = relationship("BookCopy", order_by=BookCopy.id, back_populates="book")
@@ -201,6 +202,17 @@ class Report(Base):
     content = Column(Text, nullable=True)  # Typ TEXT do przechowywania treści raportu, może być NULL
 
 # Klasa Report nie potrzebuje bezpośrednich relacji z innymi klasami
+
+class CartItem(Base):
+    __tablename__ = 'cart_items'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    book_copy_id = Column(Integer, ForeignKey('book_copies.id'), nullable=False)
+    added_at = Column(DateTime, default=func.current_timestamp(), nullable=False)
+
+    user = relationship("User", backref="cart_items")
+    book_copy = relationship("BookCopy", backref="cart_items")
 
 
 # Sprawdzenie połączenia wykonując zapytanie SELECT

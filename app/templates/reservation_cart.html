@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Koszyk Rezerwacji</title>
+</head>
+<body>
+    <h1>Koszyk Rezerwacji</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    {% if current_user.is_authenticated and current_user.role == 'czytelnik' %}
+        {% if cart_items %}
+            <ul>
+                {% for item, title, author, book_copy_id in cart_items %}
+                    <li>
+                        {{ title }} - {{ author }}
+                        <form action="{{ url_for('remove_from_cart', book_copy_id=book_copy_id) }}" method="post">
+                            <button type="submit">Usuń z koszyka</button>
+                        </form>
+                        <input type="checkbox" name="selected_books" value="{{ book_copy_id }}">
+                    </li>
+                {% endfor %}
+            </ul>
+            <form action="{{ url_for('reservation_cart') }}" method="post">
+                <input type="submit" value="Rezerwuj zaznaczone">
+            </form>
+        {% else %}
+            <p>Twój koszyk jest pusty.</p>
+        {% endif %}
+    {% else %}
+        <p>Nie masz uprawnień do przeglądania tej strony.</p>
+    {% endif %}
+</body>
+</html>

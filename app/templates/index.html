@@ -6,8 +6,35 @@
     <!-- Dodaj linki do CSS jeśli potrzebujesz -->
 </head>
 <body>
-    <h1>Witaj w aplikacji!</h1>
+    <div class="top-bar">
+        <!-- Przycisk LISTA KSIĄŻEK -->
+        <div class="book-list-button">
+            <a href="{{ url_for('search_books') }}">LISTA KSIĄŻEK</a>
+        </div>
+    </div>
 
+    <div class="search-section">
+        <!-- W zależności od roli wyświetl odpowiedni tekst -->
+        {% if current_user.is_authenticated and current_user.role == 'pracownik' %}
+            <p>Szukaj zasobów: tytuły, autorzy, numery ISBN</p>
+            <!-- Formularz wyszukiwania dla pracowników -->
+            <form action="{{ url_for('search_books') }}" method="get">
+                <input type="text" name="search">
+                <!-- Przycisk SZUKAJ -->
+                <button type="submit">SZUKAJ</button>
+            </form>
+        {% else %}
+            <p>Wyszukaj interesujący Cię tytuł lub autora</p>
+            <!-- Formularz wyszukiwania dla pozostałych użytkowników -->
+            <form action="{{ url_for('search_books') }}" method="get">
+                <input type="text" name="search" placeholder="Odkryj swoją następną przygodę">
+                <!-- Przycisk SZUKAJ -->
+                <button type="submit">SZUKAJ</button>
+            </form>
+        {% endif %}
+    </div>
+
+    <!-- Reszta treści strony -->
     <!-- Sekcja do wyświetlania komunikatów flash -->
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -16,17 +43,5 @@
         {% endfor %}
     {% endif %}
     {% endwith %}
-
-    <!-- Link do 'Powiadomienia', widoczny tylko dla czytelników -->
-    {% if current_user.is_authenticated and current_user.role == 'czytelnik' %}
-        <p><a href="{{ url_for('notifications') }}">Powiadomienia</a></p>
-    {% endif %}
-
-    <!-- Link do 'Moje książki', widoczny tylko dla czytelników -->
-    {% if current_user.is_authenticated and current_user.role == 'czytelnik' %}
-        <p><a href="{{ url_for('my_books') }}">Moje Książki</a></p>
-    {% endif %}
-
-    <!-- Reszta treści strony -->
 </body>
 </html>
