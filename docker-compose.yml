@@ -1,0 +1,54 @@
+version: "3.7"
+services:
+  flask_app:
+    build: .
+    command: python app.py
+    volumes:
+      - .:/code
+    ports:
+      - "5000:5000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - db
+    networks:
+      - mynetwork
+
+  redis:
+    image: 'redis:4-alpine'
+    ports:
+      - '6379:6379'
+    networks:
+      - mynetwork
+
+  db:
+    image: mariadb
+    environment:
+      - MYSQL_ROOT_PASSWORD=Maria
+      - MYSQL_DATABASE=library
+    ports:
+      - "3306:3306"
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - mynetwork
+
+  celery_worker:
+    build: .
+    command: celery -A task worker --pool=solo --loglevel=info
+    volumes:
+      - .:/code
+    depends_on:
+      - redis
+      - db
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    networks:
+      - mynetwork
+
+networks:
+  mynetwork:
+
+volumes:
+  db-data:

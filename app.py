@@ -1,4 +1,4 @@
-from flask import Flask, redirect, url_for, render_template, flash, request, jsonify, session
+from flask import Flask, redirect, url_for, render_template, flash, request, jsonify
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash
 import os
@@ -8,20 +8,12 @@ from sqlalchemy.orm import scoped_session, sessionmaker, joinedload
 from app.forms import LoginForm, RegistrationForm, EditUserForm, EditUserEmployee, EditUserFormByStaff, \
     SendNotificationForm
 from datetime import datetime, timedelta
-from celery import Celery
 from sqlalchemy import func
 
 
-# Ustawienia aplikacji Flask
 template_dir = os.path.abspath('./app/templates')
 app = Flask(__name__, template_folder=template_dir)
-app.config.from_pyfile('celeryconfig.py')  # Załaduj konfigurację Celery
 app.secret_key = 'tajny_klucz'
-
-# Konfiguracja Celery
-celery_app = Celery(app.import_name, broker=app.config['BROKER_URL'])
-celery_app.conf.update(app.config)
-
 
 # Ustawienia Flask-Login
 login_manager = LoginManager()
@@ -30,6 +22,8 @@ login_manager.login_view = 'login'
 
 # Ustawienia bazy danych
 db_session = scoped_session(sessionmaker(bind=engine))
+
+
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -319,7 +313,7 @@ def loan_book():
         # Tworzenie wpisu wypożyczenia
         new_loan = Loan(
             user_id=user_id,
-            book_id=copy_id,  # Powinno być copy_id, a nie book_id
+            book_id=copy_id,
             status='w trakcie',
             due_date=due_date
         )
@@ -536,7 +530,7 @@ def return_book(copy_id):
 
     # Znajdź wypożyczenie na podstawie copy_id
     loan = db_session.query(Loan).filter(
-        Loan.book_id == copy_id,  # to jest poprawne, 'book_id' to klucz obcy w 'Loan' odnoszący się do 'BookCopy'
+        Loan.book_id == copy_id,
         Loan.status.in_(['w trakcie', 'książka przetrzymana'])
     ).first()
 
@@ -700,36 +694,6 @@ def book_ready_for_pickup(copy_id):
     return redirect(url_for('manage_books'))
 
 
-@celery_app.task
-def generate_payment_reminders():
-    overdue_loans = db_session.query(Loan).filter(
-        Loan.status == 'w trakcie',
-        Loan.due_date < datetime.now()
-    ).all()
-
-    for loan in overdue_loans:
-        # Sprawdzenie, czy użytkownik ma włączone otrzymywanie powiadomień
-        user = db_session.query(User).get(loan.user_id)
-        if not user.wants_notifications:
-            continue  # Pomiń użytkownika, jeśli nie chce otrzymywać powiadomień
-
-        # Obliczenie opłaty
-        days_overdue = (datetime.now() - loan.due_date).days - 5
-        fee = max(0, ((days_overdue // 10) + 1) * 5)
-        if fee > 0 and days_overdue % 10 == 6:
-            book = db_session.query(Book).get(loan.book_id)
-            reminder_content = f"Masz do zapłaty {fee} zł za książkę {book.title}"
-            # Dodajemy przypomnienie o zapłacie
-            new_reminder = Reminder(
-                user_id=loan.user_id,
-                book_id=loan.book_id,
-                date_of_sending=datetime.now(),
-                type='zapłata'
-            )
-            db_session.add(new_reminder)
-    db_session.commit()
-
-
 @app.route('/send_notification', methods=['GET', 'POST'])
 @login_required
 def send_notification():
@@ -753,9 +717,11 @@ def send_notification():
         flash('Powiadomienie zostało wysłane.', 'success')
         return redirect(url_for('index'))
 
-    return render_template('send_notification.html', form=form)
+    return render_template('send_notification'
+                           '.html', form=form)
+
 
 
 # To powinno być na samym końcu pliku
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)

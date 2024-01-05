@@ -3,7 +3,7 @@ from wtforms import StringField, PasswordField, SubmitField, ValidationError, Bo
 from wtforms.validators import DataRequired, Email, Length, EqualTo, Optional
 
 
-# Walidator, który sprawdza, czy dane pole składa się wyłącznie z wielkich liter
+# Walidator
 def uppercase_check(form, field):
     # Sprawdź, czy pierwsza litera każdego słowa jest wielką literą
     if field.data and not all(word[0].isupper() for word in field.data.split()):

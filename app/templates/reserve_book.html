@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <title>Rezerwacja Książki</title>
-    <!-- Dodaj linki do CSS jeśli potrzebujesz -->
+
 </head>
 <body>
     <h1>Rezerwacja Książki</h1>
     <form action="{{ url_for('reserve_book') }}" method="post">
         <p>
             <label for="id">ID Egzemplarza Książki:</label><br>
-            <input type="text" id="id" name="id" required> <!-- Zmieniono nazwę z book_id na id -->
+            <input type="text" id="id" name="id" required>
         </p>
         <p>
             <input type="submit" value="Rezerwuj">

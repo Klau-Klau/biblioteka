@@ -4,12 +4,15 @@ from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, Session
 from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy.exc import OperationalError
+import time
 
 Base = declarative_base()
 
-# Uwaga: Zastąp 'username', 'password', 'host' i 'database_name' właściwymi wartościami
-DATABASE_URI = 'mysql+pymysql://root:Maria@localhost:80/library'
+DATABASE_URI = 'mysql+pymysql://root:Maria@host.docker.internal/library'
+
 engine = create_engine(DATABASE_URI, echo=True)
+
 
 class Reminder(Base):
     __tablename__ = 'reminders'
@@ -20,7 +23,7 @@ class Reminder(Base):
     date_of_sending = Column(DateTime, default=func.current_timestamp(), nullable=False)
     type = Column(Enum('odbiór', 'zapłata', 'zwrot'), nullable=False)
 
-    # Zmienione relacje - używamy innej nazwy dla backref
+
     user = relationship("User", backref="user_reminders")
     book_copy = relationship("BookCopy", backref="copy_reminders")
 
@@ -84,7 +87,7 @@ class Book(Base):
     publication_year = Column(Integer, nullable=False)
     quantity = Column(Integer, default=1)
 
-    # Nowa relacja do BookCopy
+
     book_copies = relationship("BookCopy", order_by=BookCopy.id, back_populates="book")
 
 
@@ -99,11 +102,11 @@ class Loan(Base):
     return_date = Column(DateTime, nullable=True)  # Może być NULL, oznacza to, że książka nie została jeszcze zwrócona
     status = Column(Enum('w trakcie', 'zakończone', 'książka przetrzymana'), nullable=False)
 
-    # Relacje (opcjonalnie, jeśli chcesz mieć dostęp do powiązanych obiektów użytkowników i książek)
+    # Relacje
     user = relationship("User", back_populates="loans")
     book_copy = relationship("BookCopy", back_populates="loans")  # Zaktualizowana relacja
 
-# Następnie dodaj relacje do klas User i Book (jeśli potrzebujesz nawigować między nimi)
+
 User.loans = relationship("Loan", order_by=Loan.id, back_populates="user")
 BookCopy.loans = relationship("Loan", order_by=Loan.id, back_populates="book_copy")
 
@@ -213,6 +216,27 @@ class CartItem(Base):
 
     user = relationship("User", backref="cart_items")
     book_copy = relationship("BookCopy", backref="cart_items")
+
+
+# Funkcja do sprawdzania połączenia
+def check_connection(engine, max_attempts=5, delay=3):
+    """Spróbuj połączyć się z bazą danych kilka razy z opóźnieniem."""
+    for attempt in range(max_attempts):
+        try:
+            with Session(engine) as session:
+                # Wykonaj proste zapytanie do testu połączenia
+                session.execute(text("SELECT 1"))
+                print("Połączono z bazą danych.")
+                return True  # Połączenie udane
+        except OperationalError:
+            print(f"Błąd połączenia. Próba {attempt + 1} z {max_attempts}.")
+            time.sleep(delay)
+    return False
+
+# Wywołaj funkcję sprawdzającą połączenie
+if not check_connection(engine):
+    print("Nie udało się połączyć z bazą danych.")
+    exit(1)  # Wyjdź z aplikacji, jeśli połączenie się nie powiedzie
 
 
 # Sprawdzenie połączenia wykonując zapytanie SELECT
