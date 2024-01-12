@@ -35,18 +35,31 @@
     </style>
 </head>
 <body>
-    <!-- Przycisk koszyka rezerwacji, który pokazuje się tylko zalogowanym czytelnikom -->
+<div class="search-section">
+    <form action="{{ url_for('search_books') }}" method="get">
+        <input type="text" name="search" placeholder="Wyszukaj książkę" value="{{ search_query }}">
+        <button type="submit">SZUKAJ</button>
+    </form>
+</div>
+<div class="show-all-button">
+    <a href="{{ url_for('search_books') }}" class="btn btn-secondary">Wyświetl wszystkie dostępne książki</a>
+</div>
+
 {% if current_user.is_authenticated and current_user.role == 'czytelnik' %}
 <div class="reservation-cart-button">
     <a href="{{ url_for('reservation_cart') }}" class="btn btn-primary">Koszyk rezerwacji</a>
 </div>
 {% endif %}
 
+<div class="container">
+    <div class="filter-section">
+        <form action="{{ url_for('search_books') }}" method="get" id="filters">
+            <h2>Filtry</h2>
 
-    <div class="container">
-        <div class="filter-section">
-            <form action="{{ url_for('search_books') }}" method="get" id="filters">
-                <h2>Filtry</h2>
+            <!-- Ukryte pola do przechowania wartości wyszukiwania i sortowania -->
+            <input type="hidden" name="search" value="{{ search_query }}">
+
+
 
                 <label for="genre">Gatunek:</label>
                 <select name="genre" id="genre" onchange="this.form.submit()">
@@ -69,7 +82,7 @@
                     <option value="2000-2024" {{ 'selected' if year_range == '2000-2024' }}>2000 - 2024</option>
                 </select><br>
 
-                <label for="availability">Dostępność:</label>
+                <label for="availability">Dostępność:</label >
                 <select name="availability" id="availability" onchange="this.form.submit()">
                     <option value="" {{ 'selected' if availability == '' }}>Wszystkie</option>
                     <option value="Dostępne" {{ 'selected' if availability == 'Dostępne' }}>Dostępne</option>
@@ -77,66 +90,68 @@
                 </select><br>
 
                 <label for="rating">Ocena książki:</label>
-                <select name="rating" id="rating" onchange="this.form.submit()">
-                    <option value="" {{ 'selected' if rating == '' }}>Wszystkie</option>
-                    <option value="1" {{ 'selected' if rating == '1' }}>1</option>
-                    <option value="2" {{ 'selected' if rating == '2' }}>2</option>
-                    <option value="3" {{ 'selected' if rating == '3' }}>3</option>
-                    <option value="4" {{ 'selected' if rating == '4' }}>4</option>
-                    <option value="5" {{ 'selected' if rating == '5' }}>5</option>
-                    <option></option>
-                </select>
+<select name="rating" id="rating" onchange="this.form.submit()">
+    <option value="" {{ 'selected' if rating == '' }}>Wszystkie</option>
+    <option value="1" {{ 'selected' if rating == '1' }}>1+</option>
+    <option value="2" {{ 'selected' if rating == '2' }}>2+</option>
+    <option value="3" {{ 'selected' if rating == '3' }}>3+</option>
+    <option value="4" {{ 'selected' if rating == '4' }}>4+</option>
+</select>
+
 
                 <br>
                 <br>
-                <label for="sort">Sortuj według:</label>
-                <select name="sort" id="sort" onchange="this.form.submit()">
-    <option value="newest" {{ 'selected' if sort == 'newest' or sort is none }}>rok wydania: od najnowszych</option>
-    <option value="oldest" {{ 'selected' if sort == 'oldest' }}>rok wydania: od najstarszych</option>
-    <option value="highest_rating" {{ 'selected' if sort == 'highest_rating' }}>ocena: od najwyższej</option>
-    <option value="lowest_rating" {{ 'selected' if sort == 'lowest_rating' }}>ocena: od najniższej</option>
-    <option value="most_popular" {{ 'selected' if sort == 'most_popular' }}>popularność: od najbardziej popularnej</option>
-    <option value="least_popular" {{ 'selected' if sort == 'least_popular' }}>popularność: od najmniej popularnej</option>
-    <option value="alphabetical_a_z" {{ 'selected' if sort == 'alphabetical_a_z' }}>alfabetycznie: od A do Z</option>
-    <option value="alphabetical_z_a" {{ 'selected' if sort == 'alphabetical_z_a' }}>alfabetycznie: od Z do A</option>
+        <label for="sort">Sortuj według:</label>
+        <select name="sort" id="sort" onchange="this.form.submit()">
+            <option value="newest" {{ 'selected' if sort == 'newest' or sort is none }}>rok wydania: od najnowszych</option>
+            <option value="oldest" {{ 'selected' if sort == 'oldest' }}>rok wydania: od najstarszych</option>
+            <option value="highest_rating" {{ 'selected' if sort == 'highest_rating' }}>ocena: od najwyższej</option>
+            <option value="lowest_rating" {{ 'selected' if sort == 'lowest_rating' }}>ocena: od najniższej</option>
+            <option value="most_popular" {{ 'selected' if sort == 'most_popular' }}>popularność: od najbardziej popularnej</option>
+            <option value="least_popular" {{ 'selected' if sort == 'least_popular' }}>popularność: od najmniej popularnej</option>
+            <option value="alphabetical_a_z" {{ 'selected' if sort == 'alphabetical_a_z' }}>alfabetycznie: od A do Z</option>
+            <option value="alphabetical_z_a" {{ 'selected' if sort == 'alphabetical_z_a' }}>alfabetycznie: od Z do A</option>
 </select><br>
 
 
-            </form>
-        </div>
+
+        </form>
+    </div>
 
         <div class="results-section">
-            {% if books %}
-                <ul>
-                    {% for book in books %}
+    {% if books %}
+        <ul>
+            {% for book in books %}
     <li>
         {{ book.title }} - {{ book.author }} ({{ book.publication_year }})
         {% if current_user.is_authenticated and current_user.role == 'czytelnik' %}
-            {% set available_copies = book.book_copies|selectattr('status', 'equalto', 'dostępna')|list %}
-            {% if available_copies %}
-                <form action="{{ url_for('add_to_cart') }}" method="post" class="add-to-cart">
-                    <input type="hidden" name="book_copy_id" value="{{ available_copies[0].id }}">
+            {% if book.available_not_in_cart %}
+                <form action="{{ url_for('add_to_cart') }}" method="post">
+                    <input type="hidden" name="book_id" value="{{ book.id }}">
                     <button type="submit">Dodaj do koszyka</button>
                 </form>
+            {% else %}
+                <span>(Brak dostępnych egzemplarzy)</span>
             {% endif %}
         {% endif %}
     </li>
 {% endfor %}
 
-                </ul>
-            {% else %}
-                <p>Brak książek spełniających kryteria.</p>
-            {% endif %}
-        </div>
-    </div>
+
+        </ul>
+    {% else %}
+        <p>Brak książek spełniających kryteria.</p>
+    {% endif %}
+</div>
 
     <!-- Sekcja do wyświetlania komunikatów flash -->
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            {% for category, message in messages %}
-                <div class="alert alert-{{ category }}">{{ message }}</div>
-            {% endfor %}
-        {% endif %}
-    {% endwith %}
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
 </body>
 </html>

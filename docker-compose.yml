@@ -36,7 +36,7 @@ services:
 
   celery_worker:
     build: .
-    command: celery -A task worker --pool=solo --loglevel=info
+    command: celery -A task worker -B --pool=solo --loglevel=info
     volumes:
       - .:/code
     depends_on:

@@ -8,7 +8,7 @@ from sqlalchemy.orm import scoped_session, sessionmaker, joinedload
 from app.forms import LoginForm, RegistrationForm, EditUserForm, EditUserEmployee, EditUserFormByStaff, \
     SendNotificationForm
 from datetime import datetime, timedelta
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 
 template_dir = os.path.abspath('./app/templates')
@@ -91,21 +91,29 @@ def search_books():
     year_range = request.args.get('year')
     availability = request.args.get('availability')
     rating = request.args.get('rating')
-    sort = request.args.get('sort')  # Dodanie parametru sortowania
+    sort = request.args.get('sort', 'newest')
 
     # Zbudowanie zapytania SQL z uwzględnieniem filtrów
     query = db_session.query(Book)
 
-    # Filtrowanie po gatunku
+    search_query = request.args.get('search', '')  # Ustaw domyślną wartość jako pusty string
+
+    # Zastosowanie filtrowania na podstawie zapytania wyszukiwania
+    if search_query:
+        query = query.filter(or_(
+            Book.title.ilike(f'%{search_query}%'),
+            Book.author.ilike(f'%{search_query}%'),
+            Book.ISBN.ilike(f'%{search_query}%')
+        ))
+
+    # Zastosowanie filtrów niezależnie od wyszukiwania
     if genre and genre != 'Wszystkie gatunki':
         query = query.filter(Book.genre.ilike(f"%{genre}%"))
 
-    # Filtrowanie po roku wydania
     if year_range and year_range != 'Wszystkie lata':
         start_year, end_year = map(int, year_range.split('-'))
         query = query.filter(Book.publication_year.between(start_year, end_year))
 
-    # Filtrowanie po dostępności - uwzględnienie konkretnej kopii książki
     if availability:
         subquery = db_session.query(BookCopy.book_id).filter(BookCopy.status == 'dostępna').subquery()
         if availability == 'Dostępne':
@@ -113,13 +121,15 @@ def search_books():
         elif availability == 'Niedostępne':
             query = query.filter(~Book.id.in_(subquery))
 
-    # Filtrowanie po ocenie książki
     if rating and rating != 'Wszystkie':
-        query = query.filter(Book.reviews.any(Review.rating == rating))
-
-    # Logika sortowania
-    if sort is None:
-        sort = 'newest'
+        min_rating = int(rating)
+        review_subquery = db_session.query(
+            Review.book_id,
+            func.avg(Review.rating).label('average_rating')
+        ).group_by(Review.book_id).subquery()
+        query = query.join(review_subquery, Book.id == review_subquery.c.book_id).filter(
+            review_subquery.c.average_rating >= min_rating
+        )
 
     if sort == 'newest':
         query = query.order_by(Book.publication_year.desc())
@@ -130,29 +140,29 @@ def search_books():
             Review.book_id,
             func.avg(Review.rating).label('average_rating')
         ).group_by(Review.book_id).subquery()
-        query = query.outerjoin(review_subquery, Book.id == review_subquery.c.book_id)\
-                     .order_by(review_subquery.c.average_rating.desc())
+        query = query.outerjoin(review_subquery, Book.id == review_subquery.c.book_id) \
+            .order_by(review_subquery.c.average_rating.desc())
     elif sort == 'lowest_rating':
         review_subquery = db_session.query(
             Review.book_id,
             func.avg(Review.rating).label('average_rating')
         ).group_by(Review.book_id).subquery()
-        query = query.outerjoin(review_subquery, Book.id == review_subquery.c.book_id)\
-                     .order_by(review_subquery.c.average_rating)
+        query = query.outerjoin(review_subquery, Book.id == review_subquery.c.book_id) \
+            .order_by(review_subquery.c.average_rating)
     elif sort == 'most_popular':
         loan_count_subq = db_session.query(
             BookCopy.book_id,
             func.count('*').label('loan_count')
         ).join(BookCopy.loans).group_by(BookCopy.book_id).subquery()
-        query = query.outerjoin(loan_count_subq, Book.id == loan_count_subq.c.book_id)\
-                     .order_by(loan_count_subq.c.loan_count.desc())
+        query = query.outerjoin(loan_count_subq, Book.id == loan_count_subq.c.book_id) \
+            .order_by(loan_count_subq.c.loan_count.desc())
     elif sort == 'least_popular':
         loan_count_subq = db_session.query(
             BookCopy.book_id,
             func.count('*').label('loan_count')
         ).join(BookCopy.loans).group_by(BookCopy.book_id).subquery()
-        query = query.outerjoin(loan_count_subq, Book.id == loan_count_subq.c.book_id)\
-                     .order_by(loan_count_subq.c.loan_count)
+        query = query.outerjoin(loan_count_subq, Book.id == loan_count_subq.c.book_id) \
+            .order_by(loan_count_subq.c.loan_count)
     elif sort == 'alphabetical_a_z':
         query = query.order_by(Book.title)
     elif sort == 'alphabetical_z_a':
@@ -161,7 +171,14 @@ def search_books():
     # Pobranie wyników
     books = query.all()
 
-    # Renderowanie szablonu z wynikami
+    if current_user.is_authenticated:
+        user_cart_items = db_session.query(CartItem).filter_by(user_id=current_user.id).all()
+        cart_copy_ids = {item.book_copy_id for item in user_cart_items}  # Zmiana tutaj
+
+        for book in books:
+            book_copies = db_session.query(BookCopy).filter_by(book_id=book.id, status='dostępna').all()
+            book.available_not_in_cart = any(copy.id not in cart_copy_ids for copy in book_copies)  # Zmiana tutaj
+
     return render_template('search_results.html', books=books,
                            search_query=search_query, genre=genre,
                            year_range=year_range, availability=availability,
@@ -175,69 +192,150 @@ def add_to_cart():
         flash('Tylko czytelnicy mogą dodawać książki do koszyka.', 'warning')
         return redirect(url_for('index'))
 
-    book_copy_id = request.form.get('book_copy_id')
-    # Sprawdzenie, czy książka jest już w koszyku
-    existing_cart_item = db_session.query(CartItem).filter_by(user_id=current_user.id,
-                                                              book_copy_id=book_copy_id).first()
+    book_id = request.form.get('book_id')
 
-    if existing_cart_item:
-        flash('Ta książka jest już w Twoim koszyku.', 'info')
-    else:
-        # Tworzenie nowego wpisu w koszyku
-        new_cart_item = CartItem(user_id=current_user.id, book_copy_id=book_copy_id)
+    # Pobierz wszystkie egzemplarze tej książki, które są dostępne i nie są już w koszyku użytkownika
+    available_copies = db_session.query(BookCopy).filter(
+        BookCopy.book_id == book_id,
+        BookCopy.status == 'dostępna',
+        ~BookCopy.id.in_(db_session.query(CartItem.book_copy_id).filter_by(user_id=current_user.id))
+    ).all()
+
+    if available_copies:
+        # Dodaj pierwszy dostępny egzemplarz, który nie jest jeszcze w koszyku
+        new_cart_item = CartItem(user_id=current_user.id, book_copy_id=available_copies[0].id)
         db_session.add(new_cart_item)
         db_session.commit()
         flash('Książka została dodana do koszyka.', 'success')
+    else:
+        flash('Brak dostępnych egzemplarzy tej książki.', 'danger')
 
     return redirect(url_for('search_books'))
+
+
+
+@app.route('/update_cart_quantity/<int:book_copy_id>', methods=['POST'])
+@login_required
+def update_cart_quantity(book_copy_id):
+    quantity_field = f'quantity_{book_copy_id}'  # Dynamiczne tworzenie nazwy pola na podstawie book_copy_id
+    new_quantity = request.form.get(quantity_field)
+
+    if not new_quantity.isdigit() or int(new_quantity) < 1:  # Sprawdzamy czy liczba jest dodatnią liczbą całkowitą
+        flash('Nieprawidłowa ilość.', 'danger')
+        return redirect(url_for('reservation_cart'))
+
+    new_quantity = int(new_quantity)
+
+    # Pobierz book_id z book_copy_id
+    book_copy = db_session.query(BookCopy).get(book_copy_id)
+    if not book_copy:
+        flash('Nie znaleziono egzemplarza książki.', 'danger')
+        return redirect(url_for('reservation_cart'))
+    book_id = book_copy.book_id
+
+    # Pobierz wszystkie egzemplarze tej książki, które są dostępne i nie są już w koszyku użytkownika
+    available_copies = db_session.query(BookCopy).filter(
+        BookCopy.book_id == book_id,
+        BookCopy.status == 'dostępna',
+        ~BookCopy.id.in_(db_session.query(CartItem.book_copy_id).filter_by(user_id=current_user.id))
+    ).all()
+
+    # Pobierz wszystkie egzemplarze książek w koszyku użytkownika tej samej książki
+    cart_items_same_book = db_session.query(CartItem).filter(
+        CartItem.user_id == current_user.id,
+        CartItem.book_copy.has(book_id=book_id)
+    ).all()
+
+    current_quantity = len(cart_items_same_book)
+
+    # Dodawanie nowych egzemplarzy do koszyka
+    if new_quantity > current_quantity:
+        difference = new_quantity - current_quantity
+        if difference <= len(available_copies):
+            for i in range(difference):
+                new_cart_item = CartItem(user_id=current_user.id, book_copy_id=available_copies[i].id)
+                db_session.add(new_cart_item)
+            db_session.commit()
+            flash('Dodano książki do koszyka.', 'success')
+        else:
+            flash('Niewystarczająca ilość dostępnych książek.', 'danger')
+
+    # Usuwanie egzemplarzy z koszyka
+    elif new_quantity < current_quantity:
+        difference = current_quantity - new_quantity
+        for i in range(difference):
+            db_session.delete(cart_items_same_book[i])
+        db_session.commit()
+        flash('Usunięto książki z koszyka.', 'success')
+
+    return redirect(url_for('reservation_cart'))
 
 
 @app.route('/reservation_cart', methods=['GET', 'POST'])
 @login_required
 def reservation_cart():
     if request.method == 'POST':
-        # Logika rezerwacji książek
-        selected_books = request.form.getlist('selected_books')
-        for book_copy_id in selected_books:
-            # Sprawdź dostępność i zarezerwuj książkę
-            book_copy = db_session.query(BookCopy).filter_by(id=book_copy_id).first()
-            if book_copy and book_copy.status == 'dostępna':
-                # Zmiana statusu książki na zarezerwowaną
+        selected_book_ids = request.form.getlist('selected_books')
+        for book_id in selected_book_ids:
+            # Sprawdzanie dostępności egzemplarzy przed rezerwacją
+            available_copies = db_session.query(BookCopy).filter(
+                BookCopy.book_id == book_id,
+                BookCopy.status == 'dostępna',
+                BookCopy.id.in_(db_session.query(CartItem.book_copy_id).filter_by(user_id=current_user.id))
+            ).all()
+
+            # Pobieranie tytułu książki
+            book_title = db_session.query(Book.title).filter_by(id=book_id).scalar()
+
+            if not available_copies:
+                flash(f'Wszystkie egzemplarze książki "{book_title}" zostały już wypożyczone.', 'danger')
+                continue
+
+            for book_copy in available_copies:
                 book_copy.status = 'zarezerwowana'
-                # Utworzenie rezerwacji
                 new_reservation = Reservation(user_id=current_user.id, book_id=book_copy.id, status='aktywna')
                 db_session.add(new_reservation)
-                # Usuwanie książki z koszyka
-                cart_item = db_session.query(CartItem).filter_by(book_copy_id=book_copy_id, user_id=current_user.id).first()
+                cart_item = db_session.query(CartItem).filter_by(book_copy_id=book_copy.id, user_id=current_user.id).first()
                 if cart_item:
                     db_session.delete(cart_item)
-                db_session.commit()
-                flash(f'Książka  została zarezerwowana.', 'success')
-            else:
-                flash(f'Książka jest już zarezerwowana lub niedostępna.', 'danger')
+            db_session.commit()
+            flash(f'Egzemplarze książki "{book_title}" zostały zarezerwowane.', 'success')
         return redirect(url_for('reservation_cart'))
 
-    # Pobierz książki z koszyka dla zalogowanego użytkownika
-    cart_items = db_session.query(CartItem, Book.title, Book.author, BookCopy.id) \
-        .join(BookCopy, CartItem.book_copy_id == BookCopy.id) \
-        .join(Book, BookCopy.book_id == Book.id) \
-        .filter(CartItem.user_id == current_user.id) \
-        .all()
 
+    # Zmodyfikowane zapytanie, aby zwracać listę book_copy_id dla każdej książki
+    cart_items = db_session.query(
+        Book.id.label('book_id'), Book.title, Book.author,
+        func.count(CartItem.book_copy_id).label('quantity'),
+        func.group_concat(CartItem.book_copy_id).label('book_copy_ids')
+    ).join(BookCopy, CartItem.book_copy_id == BookCopy.id
+            ).join(Book, BookCopy.book_id == Book.id
+                    ).filter(CartItem.user_id == current_user.id
+                            ).group_by(Book.id
+                                        ).all()
+
+    # Zwrócenie odpowiedzi dla GET lub POST, jeśli nie było przekierowania
     return render_template('reservation_cart.html', cart_items=cart_items)
 
 
-@app.route('/remove_from_cart/<int:book_copy_id>', methods=['POST'])
+
+@app.after_request
+def add_header(response):
+    response.cache_control.no_store = True
+    return response
+
+@app.route('/remove_from_cart/<int:book_id>', methods=['POST'])
 @login_required
-def remove_from_cart(book_copy_id):
-    # Logika usuwania książki z koszyka
-    cart_item = db_session.query(CartItem).filter_by(book_copy_id=book_copy_id, user_id=current_user.id).first()
-    if cart_item:
-        db_session.delete(cart_item)
-        db_session.commit()
-        flash('Książka została usunięta z koszyka.', 'success')
-    else:
-        flash('Książka nie została znaleziona w koszyku.', 'danger')
+def remove_from_cart(book_id):
+    # Usuń wszystkie egzemplarze książki z koszyka
+    CartItemsToDelete = db_session.query(CartItem).filter(
+        CartItem.user_id == current_user.id,
+        CartItem.book_copy.has(book_id=book_id)
+    ).all()
+    for item in CartItemsToDelete:
+        db_session.delete(item)
+    db_session.commit()
+    flash('Wszystkie egzemplarze książki zostały usunięte z koszyka.', 'success')
     return redirect(url_for('reservation_cart'))
 
 
