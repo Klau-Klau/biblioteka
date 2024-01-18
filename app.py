@@ -1,24 +1,39 @@
-from flask import Flask, redirect, url_for, render_template, flash, request, jsonify
+from flask import Flask, flash, request, jsonify, send_file, redirect
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from werkzeug.security import generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 import os
 from database_setup import User, engine, Book, Reservation, Loan, BookCopy, Notification, Reminder, Review, CartItem, \
-    Recommendation
-from sqlalchemy.orm import scoped_session, sessionmaker, joinedload
-from app.forms import LoginForm, RegistrationForm, EditUserForm, EditUserEmployee, EditUserFormByStaff, \
-    SendNotificationForm
+    Recommendation, Payment, Media
+from sqlalchemy.orm import scoped_session, sessionmaker, joinedload, aliased
 from datetime import datetime, timedelta
 from sqlalchemy import func, or_
+import stripe
+from flask_cors import CORS
+import re
+from azure.storage.blob import BlobServiceClient
+from mimetypes import guess_type
+
+
+# Inicjalizacja klienta usługi Azure Blob Storage
+connection_string = "DefaultEndpointsProtocol=https;AccountName=bibliotekaklaudia;AccountKey=KW+qSFOSstEbbeDs4QrZgSHHYkicem3ZG2iJr2QQ3Rv5DqAmIuqjYN1xBLR/FBP0uM1PYMrSPS7q+AStzSH0Ig==;EndpointSuffix=core.windows.net"
+blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+
+
+stripe.api_key = 'sk_test_51OXsZtIG0JJr5IMEd4HYvEZU8ZOb3VEBfVEa4MrndczndI1kT1FQaVDsm9GAmBLg2NLzsq3Kov6YCQH2jdV4YcSJ00rmkIM4uW'
 
 
 template_dir = os.path.abspath('./app/templates')
 app = Flask(__name__, template_folder=template_dir)
 app.secret_key = 'tajny_klucz'
 
+
 # Ustawienia Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
-login_manager.login_view = 'login'
+login_manager.login_view = 'login_api'
+
+CORS(app, supports_credentials=True, origins=["http://localhost:8080"])
+
 
 # Ustawienia bazy danych
 db_session = scoped_session(sessionmaker(bind=engine))
@@ -30,60 +45,110 @@ def load_user(user_id):
     return db_session.query(User).get(int(user_id))
 
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+@app.route('/api/books')
+def get_books():
+    # Pobieranie danych o książkach z bazy danych
+    books_query = db_session.query(Book).all()
+    books = [
+        {
+            "title": book.title,
+            "author": book.author,
+            "genre": book.genre,
+            "description": book.description,
+            "publication_year": book.publication_year,
+            "quantity": book.quantity
+        }
+        for book in books_query
+    ]
+    return jsonify(books=books)
 
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    form = LoginForm()
-    if form.validate_on_submit():
-        user = db_session.query(User).filter_by(email=form.email.data).first()
-        if user and user.check_password(form.password.data):
-            login_user(user)
-            return redirect(url_for('index'))
-        else:
-            flash('Nieprawidłowy email lub hasło.', 'danger')  # Dodany komunikat
-    return render_template('login.html', form=form)
-
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
+@app.route('/api/login', methods=['POST'])
+def login_api():
+    # Sprawdzenie, czy użytkownik jest już zalogowany
     if current_user.is_authenticated:
-        return redirect(url_for('index'))  # Przekieruj zalogowanych użytkowników
+        # Jeśli użytkownik jest już zalogowany, zwróć błąd
+        return jsonify({'success': False, 'error': 'User already logged in'}), 400
 
-    form = RegistrationForm()
-    if form.validate_on_submit():
-        # Sprawdzanie, czy użytkownik z takim emailem już istnieje
-        existing_user = db_session.query(User).filter_by(email=form.email.data).first()
-        if existing_user is None:
-            hashed_password = generate_password_hash(form.password.data, method='sha256')
-            new_user = User(
-                name=form.name.data,
-                surname=form.surname.data,
-                email=form.email.data,
-                password=hashed_password,
-                role='czytelnik'  # Zakładając, że każdy nowy użytkownik ma rolę 'czytelnik'
-            )
-            db_session.add(new_user)
-            db_session.commit()
-            flash('Konto zostało pomyślnie utworzone.', 'success')
-            return redirect(url_for('login'))
-        else:
-            flash('Email już istnieje.', 'danger')
+    # Pobranie danych z żądania
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
 
-    return render_template('register.html', form=form)
+    # Wyszukiwanie użytkownika w bazie danych
+    user = db_session.query(User).filter_by(email=email).first()
 
-@app.route('/logout')
+    # Sprawdzenie hasła i logowanie użytkownika
+    if user and check_password_hash(user.password, password):
+        login_user(user)
+        return jsonify({
+            'success': True,
+            'user_info': {
+                'id': user.id,
+                'name': user.name,
+                'surname': user.surname,
+                'email': user.email,
+                'role': user.role
+            }
+        }), 200
+    else:
+        # Jeśli dane logowania są nieprawidłowe
+        return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
+
+@app.route('/api/register', methods=['POST'])
+def register_api():
+    if current_user.is_authenticated:
+        # Przekieruj zalogowanych użytkowników
+        return jsonify({'success': False, 'error': 'User already logged in'}), 400
+
+    # Pobranie danych z żądania JSON
+    data = request.json
+    name = data.get('name')
+    surname = data.get('surname')
+    email = data.get('email')
+    password = data.get('password')
+
+    # Prosta walidacja imienia i nazwiska
+    if not re.match(r'^[A-Z][a-z]{1,}$', name) or not re.match(r'^[A-Z][a-z]{1,}$', surname):
+        return jsonify({'success': False,
+                        'error': 'Imię i nazwisko muszą zaczynać się z wielkiej litery i zawierać przynajmniej 2 litery.'}), 400
+
+    # Walidacja hasła
+    password_pattern = re.compile(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$')
+    if not password_pattern.match(password):
+        return jsonify({'success': False, 'error': 'Hasło nie spełnia wymagań.'}), 400
+
+    # Sprawdzenie, czy użytkownik już istnieje
+    existing_user = db_session.query(User).filter_by(email=email).first()
+    if existing_user is not None:
+        # Użytkownik już istnieje
+        return jsonify({'success': False, 'error': 'Użytkownik z podanym adresem e-mail już istnieje'}), 409
+
+
+    # Tworzenie nowego użytkownika
+    hashed_password = generate_password_hash(password, method='sha256')
+    new_user = User(
+        name=name,
+        surname=surname,
+        email=email,
+        password=hashed_password,
+        role='czytelnik'  # Zakładając, że każdy nowy użytkownik ma rolę 'czytelnik'
+    )
+    db_session.add(new_user)
+    db_session.commit()
+
+    # Odpowiedź po pomyślnej rejestracji
+    return jsonify({'success': True, 'message': 'Account successfully created'}), 201
+
+
+@app.route('/api/logout', methods=['POST'])
 @login_required
 def logout():
     logout_user()
-    flash('Zostałeś wylogowany.', 'success')
-    return redirect(url_for('login'))
+    return jsonify({'success': True, 'message': 'Zostałeś wylogowany.'}), 200
 
 
-@app.route('/search_books', methods=['GET'])
+@app.route('/api/search_books', methods=['GET'])
 def search_books():
     # Pobranie parametrów zapytania
     search_query = request.args.get('search')
@@ -179,22 +244,36 @@ def search_books():
             book_copies = db_session.query(BookCopy).filter_by(book_id=book.id, status='dostępna').all()
             book.available_not_in_cart = any(copy.id not in cart_copy_ids for copy in book_copies)  # Zmiana tutaj
 
-    return render_template('search_results.html', books=books,
-                           search_query=search_query, genre=genre,
-                           year_range=year_range, availability=availability,
-                           rating=rating, sort=sort)
+    results = [
+        {
+            "book_id": book.id,
+            "title": book.title,
+            "author": book.author,
+            "genre": book.genre,
+            "year": book.publication_year,
+            "available": any(copy.status == 'dostępna' for copy in book.book_copies)
+            # Dodaj więcej informacji według potrzeb
+        } for book in books
+    ]
+
+    return jsonify({
+        "books": results,
+        "searchQuery": search_query,
+        "selectedGenre": genre,
+        "selectedYearRange": year_range,
+        "selectedAvailability": availability,
+        "selectedRating": rating,
+        "selectedSort": sort
+    })
 
 
-@app.route('/add_to_cart', methods=['POST'])
+@app.route('/api/add_to_cart', methods=['POST'])
 @login_required
-def add_to_cart():
-    if current_user.role != 'czytelnik':
-        flash('Tylko czytelnicy mogą dodawać książki do koszyka.', 'warning')
-        return redirect(url_for('index'))
+def api_add_to_cart():
+    data = request.json
+    book_id = data.get('book_id')
+    print("Otrzymano żądanie dodania do koszyka dla książki z ID:", book_id)
 
-    book_id = request.form.get('book_id')
-
-    # Pobierz wszystkie egzemplarze tej książki, które są dostępne i nie są już w koszyku użytkownika
     available_copies = db_session.query(BookCopy).filter(
         BookCopy.book_id == book_id,
         BookCopy.status == 'dostępna',
@@ -202,27 +281,24 @@ def add_to_cart():
     ).all()
 
     if available_copies:
-        # Dodaj pierwszy dostępny egzemplarz, który nie jest jeszcze w koszyku
         new_cart_item = CartItem(user_id=current_user.id, book_copy_id=available_copies[0].id)
         db_session.add(new_cart_item)
         db_session.commit()
-        flash('Książka została dodana do koszyka.', 'success')
-    else:
-        flash('Brak dostępnych egzemplarzy tej książki.', 'danger')
+        return jsonify({'success': True, 'message': 'Książka została dodana do koszyka.'})
 
-    return redirect(url_for('search_books'))
+    return jsonify({'success': False, 'message': 'Brak dostępnych egzemplarzy tej książki.'})
 
 
 
-@app.route('/update_cart_quantity/<int:book_copy_id>', methods=['POST'])
+@app.route('/api//update_cart_quantity/<int:book_copy_id>', methods=['POST'])
 @login_required
 def update_cart_quantity(book_copy_id):
-    quantity_field = f'quantity_{book_copy_id}'  # Dynamiczne tworzenie nazwy pola na podstawie book_copy_id
-    new_quantity = request.form.get(quantity_field)
+    data = request.json
+    new_quantity = data.get('quantity')
 
-    if not new_quantity.isdigit() or int(new_quantity) < 1:  # Sprawdzamy czy liczba jest dodatnią liczbą całkowitą
+    if not str(new_quantity).isdigit() or int(new_quantity) < 1:
         flash('Nieprawidłowa ilość.', 'danger')
-        return redirect(url_for('reservation_cart'))
+        return jsonify({'error': 'Nieprawidłowa ilość.'}), 400
 
     new_quantity = int(new_quantity)
 
@@ -230,7 +306,7 @@ def update_cart_quantity(book_copy_id):
     book_copy = db_session.query(BookCopy).get(book_copy_id)
     if not book_copy:
         flash('Nie znaleziono egzemplarza książki.', 'danger')
-        return redirect(url_for('reservation_cart'))
+        return jsonify({'error': 'Nie znaleziono egzemplarza książki.'}), 404
     book_id = book_copy.book_id
 
     # Pobierz wszystkie egzemplarze tej książki, które są dostępne i nie są już w koszyku użytkownika
@@ -248,7 +324,9 @@ def update_cart_quantity(book_copy_id):
 
     current_quantity = len(cart_items_same_book)
 
-    # Dodawanie nowych egzemplarzy do koszyka
+    response_message = ''
+    status_code = 200
+
     if new_quantity > current_quantity:
         difference = new_quantity - current_quantity
         if difference <= len(available_copies):
@@ -256,67 +334,86 @@ def update_cart_quantity(book_copy_id):
                 new_cart_item = CartItem(user_id=current_user.id, book_copy_id=available_copies[i].id)
                 db_session.add(new_cart_item)
             db_session.commit()
-            flash('Dodano książki do koszyka.', 'success')
+            response_message = 'Dodano książki do koszyka.'
         else:
-            flash('Niewystarczająca ilość dostępnych książek.', 'danger')
-
-    # Usuwanie egzemplarzy z koszyka
+            response_message = 'Niewystarczająca ilość dostępnych książek.'
+            status_code = 400
     elif new_quantity < current_quantity:
         difference = current_quantity - new_quantity
         for i in range(difference):
             db_session.delete(cart_items_same_book[i])
         db_session.commit()
-        flash('Usunięto książki z koszyka.', 'success')
+        response_message = 'Usunięto książki z koszyka.'
 
-    return redirect(url_for('reservation_cart'))
+    return jsonify({'message': response_message}), status_code
 
 
-@app.route('/reservation_cart', methods=['GET', 'POST'])
+@app.route('/api/reservation_cart', methods=['GET'])
 @login_required
-def reservation_cart():
-    if request.method == 'POST':
-        selected_book_ids = request.form.getlist('selected_books')
-        for book_id in selected_book_ids:
-            # Sprawdzanie dostępności egzemplarzy przed rezerwacją
-            available_copies = db_session.query(BookCopy).filter(
-                BookCopy.book_id == book_id,
-                BookCopy.status == 'dostępna',
-                BookCopy.id.in_(db_session.query(CartItem.book_copy_id).filter_by(user_id=current_user.id))
-            ).all()
-
-            # Pobieranie tytułu książki
-            book_title = db_session.query(Book.title).filter_by(id=book_id).scalar()
-
-            if not available_copies:
-                flash(f'Wszystkie egzemplarze książki "{book_title}" zostały już wypożyczone.', 'danger')
-                continue
-
-            for book_copy in available_copies:
-                book_copy.status = 'zarezerwowana'
-                new_reservation = Reservation(user_id=current_user.id, book_id=book_copy.id, status='aktywna')
-                db_session.add(new_reservation)
-                cart_item = db_session.query(CartItem).filter_by(book_copy_id=book_copy.id, user_id=current_user.id).first()
-                if cart_item:
-                    db_session.delete(cart_item)
-            db_session.commit()
-            flash(f'Egzemplarze książki "{book_title}" zostały zarezerwowane.', 'success')
-        return redirect(url_for('reservation_cart'))
-
-
-    # Zmodyfikowane zapytanie, aby zwracać listę book_copy_id dla każdej książki
+def get_reservation_cart():
+    # Zapytanie, aby zwracać listę book_copy_id dla każdej książki
     cart_items = db_session.query(
         Book.id.label('book_id'), Book.title, Book.author,
         func.count(CartItem.book_copy_id).label('quantity'),
         func.group_concat(CartItem.book_copy_id).label('book_copy_ids')
     ).join(BookCopy, CartItem.book_copy_id == BookCopy.id
-            ).join(Book, BookCopy.book_id == Book.id
-                    ).filter(CartItem.user_id == current_user.id
-                            ).group_by(Book.id
-                                        ).all()
+          ).join(Book, BookCopy.book_id == Book.id
+                ).filter(CartItem.user_id == current_user.id
+                        ).group_by(Book.id
+                                   ).all()
 
-    # Zwrócenie odpowiedzi dla GET lub POST, jeśli nie było przekierowania
-    return render_template('reservation_cart.html', cart_items=cart_items)
+    # Przygotowanie danych do odpowiedzi JSON
+    cart_items_json = [
+        {
+            'book_id': item.book_id,
+            'title': item.title,
+            'author': item.author,
+            'quantity': item.quantity,
+            'book_copy_ids': item.book_copy_ids.split(',')
+        } for item in cart_items
+    ]
 
+    return jsonify(cart_items_json)
+
+
+@app.route('/api/reservation_cart', methods=['POST'])
+@login_required
+def post_reservation_cart():
+    data = request.json
+    selected_book_ids = data.get('selected_books')
+
+    if not selected_book_ids:
+        return jsonify({'error': 'Brak wybranych książek'}), 400
+
+    response_messages = []
+
+    for book_id in selected_book_ids:
+        # Sprawdzanie dostępności egzemplarzy przed rezerwacją
+        available_copies = db_session.query(BookCopy).filter(
+            BookCopy.book_id == book_id,
+            BookCopy.status == 'dostępna',
+            BookCopy.id.in_(db_session.query(CartItem.book_copy_id).filter_by(user_id=current_user.id))
+        ).all()
+
+        # Pobieranie tytułu książki
+        book_title = db_session.query(Book.title).filter_by(id=book_id).scalar()
+
+        if not available_copies:
+            flash(f'Wszystkie egzemplarze książki "{book_title}" zostały już wypożyczone.', 'danger')
+            continue
+
+        for book_copy in available_copies:
+            book_copy.status = 'zarezerwowana'
+            new_reservation = Reservation(user_id=current_user.id, book_id=book_copy.id, status='aktywna')
+            db_session.add(new_reservation)
+            cart_item = db_session.query(CartItem).filter_by(book_copy_id=book_copy.id, user_id=current_user.id).first()
+            if cart_item:
+                db_session.delete(cart_item)
+        db_session.commit()
+        flash(f'Egzemplarze książki "{book_title}" zostały zarezerwowane.', 'success')
+
+        # Zwrócenie komunikatów o wyniku operacji w formacie JSON
+        return jsonify({'messages': response_messages})
 
 
 @app.after_request
@@ -324,7 +421,7 @@ def add_header(response):
     response.cache_control.no_store = True
     return response
 
-@app.route('/remove_from_cart/<int:book_id>', methods=['POST'])
+@app.route('/api/remove_from_cart/<int:book_id>', methods=['POST'])
 @login_required
 def remove_from_cart(book_id):
     # Usuń wszystkie egzemplarze książki z koszyka
@@ -332,105 +429,89 @@ def remove_from_cart(book_id):
         CartItem.user_id == current_user.id,
         CartItem.book_copy.has(book_id=book_id)
     ).all()
+
+    if not CartItemsToDelete:
+        return jsonify({'message': 'Brak książek w koszyku do usunięcia.'}), 404
+
     for item in CartItemsToDelete:
         db_session.delete(item)
     db_session.commit()
-    flash('Wszystkie egzemplarze książki zostały usunięte z koszyka.', 'success')
-    return redirect(url_for('reservation_cart'))
+
+    return jsonify({'message': 'Wszystkie egzemplarze książki zostały usunięte z koszyka.'}), 200
 
 
-@app.route('/reserve_book', methods=['POST'])
+
+@app.route('/api/reserve_book', methods=['POST'])
 @login_required
 def reserve_book():
-    book_copy_id = request.form.get('id')  # Pobieranie id egzemplarza książki
+    data = request.json
+    book_copy_ids = data.get('bookCopyIds')  # Pobieranie listy ID egzemplarzy książek
 
-    # Przygotowanie zapytania
-    query = db_session.query(BookCopy).filter_by(id=book_copy_id, status='dostępna')
-    print(query)  # Wypisanie zapytania SQL dla celów debugowania
-    book_copy = query.first()
+    if not book_copy_ids:
+        return jsonify({'message': 'Nie podano id egzemplarzy książek'}), 400
 
-    if not book_copy:
-        return jsonify({'message': 'Książka nie znaleziona lub żaden egzemplarz nie jest dostępny'}), 404
+    for book_copy_id in book_copy_ids:
+        # Przygotowanie zapytania dla każdego ID
+        book_copy = db_session.query(BookCopy).filter_by(id=book_copy_id, status='dostępna').first()
 
-    # Zmiana statusu egzemplarza książki
-    book_copy.status = 'zarezerwowana'
+        if not book_copy:
+            return jsonify({'message': f'Egzemplarz książki o ID {book_copy_id} nie znaleziony lub nie jest dostępny'}), 404
 
-    # Utworzenie rezerwacji
-    reservation = Reservation(
-        user_id=current_user.id,
-        book_id=book_copy.id,  # Używamy book_id jako klucza obcego do egzemplarza książki
-        status='aktywna'
-    )
-    db_session.add(reservation)
+        # Zmiana statusu egzemplarza książki
+        book_copy.status = 'zarezerwowana'
+
+        # Utworzenie rezerwacji
+        reservation = Reservation(
+            user_id=current_user.id,
+            book_id=book_copy.id,
+            status='aktywna'
+        )
+        db_session.add(reservation)
+
     db_session.commit()
-
-    return jsonify({'message': 'Rezerwacja została pomyślnie utworzona'}), 200
-
-
-@app.route('/reserve', methods=['GET'])
-@login_required
-def show_reserve_form():
-    if current_user.role == 'czytelnik':
-        return render_template('reserve_book.html')
-    else:
-        flash('Tylko czytelnicy mogą rezerwować książki.', 'warning')
-        return redirect(url_for('index'))
+    return jsonify({'message': 'Rezerwacje zostały pomyślnie utworzone'}), 200
 
 
-
-@app.route('/mark_as_loan', methods=['GET', 'POST'])
+@app.route('/api//mark_as_loan', methods=['POST'])
 @login_required
 def loan_book():
     if current_user.role != 'pracownik':
-        flash('Tylko pracownicy mogą wypożyczać książki.', 'warning')
-        return redirect(url_for('index'))
+        return jsonify({'status': 'error', 'message': 'Tylko pracownicy mogą wypożyczać książki.'}), 403
 
-    if request.method == 'POST':
-        copy_id = request.form.get('copy_id')
-        book_copy = db_session.query(BookCopy).filter_by(id=copy_id, status='do odbioru').first()
+    data = request.get_json()
+    copy_id = data.get('copy_id')
 
-        if not book_copy:
-            flash('Nie można wypożyczyć tej książki.', 'danger')
-            return redirect(url_for('loan_book'))
+    book_copy = db_session.query(BookCopy).filter_by(id=copy_id, status='do odbioru').first()
+    if not book_copy:
+        return jsonify({'status': 'error', 'message': 'Nie można wypożyczyć tej książki.'}), 400
 
-        # Znajdź aktywną rezerwację dla tego egzemplarza
-        reservation = db_session.query(Reservation).filter_by(book_id=copy_id, status='aktywna').first()
-        if reservation:
-            reservation.status = 'zakończona'
-            user_id = reservation.user_id
-        else:
-            flash('Brak aktywnej rezerwacji dla tego egzemplarza.', 'warning')
-            return redirect(url_for('loan_book'))
+    reservation = db_session.query(Reservation).filter_by(book_id=copy_id, status='aktywna').first()
+    if reservation:
+        reservation.status = 'zakończona'
+        user_id = reservation.user_id
+    else:
+        return jsonify({'status': 'error', 'message': 'Brak aktywnej rezerwacji dla tego egzemplarza.'}), 400
 
-        # Aktualizacja statusu egzemplarza książki
-        book_copy.status = 'wypożyczona'
+    book_copy.status = 'wypożyczona'
+    due_date = datetime.now() + timedelta(days=90)
 
-        # Ustawienie terminu zwrotu
-        due_date = datetime.now() + timedelta(days=90)
+    new_loan = Loan(
+        user_id=user_id,
+        book_id=copy_id,
+        status='w trakcie',
+        due_date=due_date
+    )
+    db_session.add(new_loan)
+    db_session.commit()
 
-        # Tworzenie wpisu wypożyczenia
-        new_loan = Loan(
-            user_id=user_id,
-            book_id=copy_id,
-            status='w trakcie',
-            due_date=due_date
-        )
-        db_session.add(new_loan)
-        db_session.commit()
-        flash('Książka została wypożyczona.', 'success')
-        return redirect(url_for('index'))
-
-    return render_template('mark_as_loan.html')
+    return jsonify({'status': 'success', 'message': 'Książka została wypożyczona.'})
 
 
-
-
-
-@app.route('/my_books')
+@app.route('/api/my_books')
 @login_required
 def my_books():
     if current_user.role != 'czytelnik':
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Brak dostępu'}), 403
 
     user_id = current_user.id
 
@@ -473,132 +554,91 @@ def my_books():
         for loan in copy.loans if loan.status == 'w trakcie'
     ]
 
-    return render_template('my_books.html', reserved_books=reserved_books_data, loaned_books=loaned_books_data)
+    return jsonify({
+        'reserved_books': reserved_books_data,
+        'loaned_books': loaned_books_data
+    })
 
 
-@app.route('/add_book', methods=['GET', 'POST'])
+@app.route('/api/add_book', methods=['POST'])
 @login_required
 def add_book():
     if current_user.role != 'pracownik':
-        flash('Tylko pracownicy mogą dodać książki.', 'warning')
-        return redirect(url_for('index'))
+        return jsonify({'status': 'error', 'message': 'Tylko pracownicy mogą dodać książki.'}), 403
 
-    if request.method == 'POST':
-        isbn = request.form.get('isbn')
-        title = request.form.get('title')
-        author = request.form.get('author')
-        genre = request.form.get('genre')
-        description = request.form.get('description')
-        publication_year = request.form.get('publication_year')
-        quantity = int(request.form.get('quantity', 1))  # domyślnie 1, jeśli nie podano
+    data = request.get_json()
+    isbn = data.get('isbn')
+    title = data.get('title')
+    author = data.get('author')
+    genre = data.get('genre')
+    description = data.get('description')
+    publication_year = data.get('publication_year')
+    quantity = int(data.get('quantity', 1))
 
-        existing_book = db_session.query(Book).filter_by(ISBN=isbn).first()
+    existing_book = db_session.query(Book).filter_by(ISBN=isbn).first()
+    if existing_book:
+        book_id = existing_book.id
+        message = 'Liczba egzemplarzy książki została zaktualizowana.'
+    else:
+        new_book = Book(
+            ISBN=isbn,
+            title=title,
+            author=author,
+            genre=genre,
+            description=description,
+            publication_year=publication_year
+        )
+        db_session.add(new_book)
+        db_session.flush()
+        book_id = new_book.id
+        message = f'Książka {title} została pomyślnie dodana.'
 
-        if existing_book:
-            book_id = existing_book.id
-            flash('Liczba egzemplarzy książki została zaktualizowana.', 'success')
-        else:
-            new_book = Book(
-                ISBN=isbn,
-                title=title,
-                author=author,
-                genre=genre,
-                description=description,
-                publication_year=publication_year
-            )
-            db_session.add(new_book)
-            db_session.flush()  # Zapisz obiekt new_book, aby uzyskać jego id
-            book_id = new_book.id
-            flash(f'Książka {title} została pomyślnie dodana.', 'success')
+    for _ in range(quantity):
+        new_copy = BookCopy(book_id=book_id, status='dostępna')
+        db_session.add(new_copy)
 
-        for _ in range(quantity):
-            new_copy = BookCopy(book_id=book_id, status='dostępna')
-            db_session.add(new_copy)
-
-        db_session.commit()
-        return redirect(url_for('index'))
-
-    return render_template('add_book.html')
+    db_session.commit()
+    return jsonify({'status': 'success', 'message': message})
 
 
-
-@app.route('/edit_book/<int:book_id>', methods=['GET', 'POST'])
+@app.route('/api/edit_book/<int:book_id>', methods=['GET', 'POST'])
 @login_required
 def edit_book(book_id):
-    # Ograniczenie dostępu tylko dla pracowników
     if current_user.role != 'pracownik':
-        flash('Tylko pracownicy mogą edytować książki.', 'warning')
-        return redirect(url_for('index'))
+        return jsonify({'status': 'error', 'message': 'Tylko pracownicy mogą edytować książki.'}), 403
 
     book = db_session.query(Book).get(book_id)
     if book is None:
-        flash('Książka nie została znaleziona.', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'status': 'error', 'message': 'Książka nie została znaleziona.'}), 404
 
     if request.method == 'POST':
-        # Aktualizacja danych książki z formularza
-        book.ISBN = request.form.get('isbn')
-        book.title = request.form.get('title')
-        book.author = request.form.get('author')
-        book.genre = request.form.get('genre')
-        book.description = request.form.get('description')
-        book.publication_year = request.form.get('publication_year')
+        data = request.get_json()
+        book.ISBN = data.get('isbn')
+        book.title = data.get('title')
+        book.author = data.get('author')
+        book.genre = data.get('genre')
+        book.description = data.get('description')
+        book.publication_year = data.get('publication_year')
 
         db_session.commit()
-        flash('Książka została zaktualizowana.', 'success')
-        return redirect(url_for('my_books'))
+        return jsonify({'status': 'success', 'message': 'Książka została zaktualizowana.'})
 
-    # GET - wyświetlenie danych książki w formularzu
-    return render_template('edit_book.html', book=book)
-
-
-@app.route('/delete_book/<int:copy_id>', methods=['POST'])
-@login_required
-def delete_book(copy_id):
-    if current_user.role != 'pracownik':
-        flash('Tylko pracownicy mogą usuwać książki.', 'warning')
-        return redirect(url_for('index'))
-
-    book_copy = db_session.query(BookCopy).get(copy_id)
-    if book_copy is None:
-        flash('Egzemplarz książki nie został znaleziony.', 'danger')
-        return redirect(url_for('manage_books'))
-
-    if book_copy.status != 'dostępna':
-        flash('Tylko egzemplarze książek o statusie "dostępna" mogą być usunięte.', 'danger')
-        return redirect(url_for('manage_books'))
-
-    book_id = book_copy.book_id
-    db_session.delete(book_copy)
-    db_session.commit()
-
-    # Sprawdź, czy są inne egzemplarze tej książki
-    if not db_session.query(BookCopy).filter_by(book_id=book_id).count():
-        # Usuń książkę, powiązane rekomendacje oraz recenzje
-        book = db_session.query(Book).get(book_id)
-        recommendations = db_session.query(Recommendation).filter_by(book_id=book_id).all()
-        reviews = db_session.query(Review).filter_by(book_id=book_id).all()
-
-        for recommendation in recommendations:
-            db_session.delete(recommendation)
-        for review in reviews:
-            db_session.delete(review)
-
-        db_session.delete(book)
-        db_session.commit()
-        flash('Książka oraz wszystkie związane z nią rekomendacje i recenzje zostały usunięte.', 'success')
-    else:
-        flash('Egzemplarz książki został usunięty.', 'success')
-
-    return redirect(url_for('manage_books'))
+    # GET - zwróć dane książki w formacie JSON
+    return jsonify({
+        'isbn': book.ISBN,
+        'title': book.title,
+        'author': book.author,
+        'genre': book.genre,
+        'description': book.description,
+        'publication_year': book.publication_year
+    })
 
 
-@app.route('/manage_book')
+@app.route('/api/manage_books')
 @login_required
 def manage_books():
     if current_user.role != 'pracownik':
-        flash('Brak dostępu.', 'warning')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Brak dostępu.'}), 403
 
     # Łączenie książek z ich kopiami i wypożyczeniami
     books_with_details = db_session.query(Book).options(
@@ -610,21 +650,35 @@ def manage_books():
         .joinedload(Reservation.user)
     ).all()
 
-    return render_template('manage_book.html', books_with_details=books_with_details)
+    # Przekształcenie danych na format JSON
+    books_json = []
+    for book in books_with_details:
+        book_data = {
+            'id': book.id,
+            'title': book.title,
+            'author': book.author,
+            # Dodaj więcej pól według potrzeb
+            'copies': [{
+                'id': copy.id,
+                'status': copy.status,
+                # Możesz dodać więcej szczegółów o kopiach
+            } for copy in book.book_copies]
+        }
+        books_json.append(book_data)
+
+    return jsonify(books_json)
 
 
-@app.route('/return_book/<int:copy_id>', methods=['POST'])
+@app.route('/api/return_book/<int:copy_id>', methods=['POST'])
 @login_required
 def return_book(copy_id):
     if current_user.role != 'pracownik':
-        flash('Tylko pracownicy mogą zarządzać zwrotami książek.', 'warning')
-        return redirect(url_for('manage_books'))
+        return jsonify({'error': 'Tylko pracownicy mogą zarządzać zwrotami książek.'}), 403
 
     # Znajdź egzemplarz książki na podstawie ID
     book_copy = db_session.query(BookCopy).get(copy_id)
     if not book_copy:
-        flash('Egzemplarz książki nie został znaleziony.', 'danger')
-        return redirect(url_for('manage_books'))
+        return jsonify({'error': 'Egzemplarz książki nie został znaleziony.'}), 404
 
     # Znajdź wypożyczenie na podstawie copy_id
     loan = db_session.query(Loan).filter(
@@ -637,187 +691,343 @@ def return_book(copy_id):
         loan.status = 'zakończone'
         loan.return_date = datetime.utcnow()
         book_copy.status = 'dostępna'
-
         db_session.commit()
-        flash(f'Egzemplarz książki "{book_copy.book.title}" został zwrócony i jest teraz dostępny.', 'success')
+        return jsonify({'message': f'Egzemplarz książki "{book_copy.book.title}" został zwrócony i jest teraz dostępny.'})
     else:
-        flash('Brak aktywnego wypożyczenia dla tego egzemplarza książki.', 'warning')
+        return jsonify({'warning': 'Brak aktywnego wypożyczenia dla tego egzemplarza książki.'})
 
-    return redirect(url_for('manage_books'))
+@app.route('/api/delete_book/<int:copy_id>', methods=['POST'])
+@login_required
+def delete_book(copy_id):
+    if current_user.role != 'pracownik':
+        return jsonify({'error': 'Tylko pracownicy mogą usuwać książki.'}), 403
+
+    book_copy = db_session.query(BookCopy).get(copy_id)
+    if book_copy is None:
+        return jsonify({'error': 'Egzemplarz książki nie został znaleziony.'}), 404
+
+    if book_copy.status != 'dostępna':
+        return jsonify({'error': 'Tylko egzemplarze książek o statusie "dostępna" mogą być usunięte.'}), 400
+
+    book_id = book_copy.book_id
+    db_session.delete(book_copy)
+    db_session.commit()
+
+    # Sprawdź, czy są inne egzemplarze tej książki
+    if not db_session.query(BookCopy).filter_by(book_id=book_id).count():
+        book = db_session.query(Book).get(book_id)
+        recommendations = db_session.query(Recommendation).filter_by(book_id=book_id).all()
+        reviews = db_session.query(Review).filter_by(book_id=book_id).all()
+
+        for recommendation in recommendations:
+            db_session.delete(recommendation)
+        for review in reviews:
+            db_session.delete(review)
+
+        db_session.delete(book)
+        db_session.commit()
+        return jsonify({'message': 'Książka oraz wszystkie związane z nią rekomendacje i recenzje zostały usunięte.'})
+    else:
+        return jsonify({'message': 'Egzemplarz książki został usunięty.'})
+
+@app.route('/api/book_ready_for_pickup/<int:copy_id>', methods=['POST'])
+@login_required
+def book_ready_for_pickup(copy_id):
+    if current_user.role != 'pracownik':
+        return jsonify({'error': 'Brak uprawnień.'}), 403
+
+    book_copy = db_session.query(BookCopy).get(copy_id)
+    if not book_copy:
+        return jsonify({'error': 'Egzemplarz książki nie został znaleziony.'}), 404
+
+    if book_copy.status != 'zarezerwowana':
+        return jsonify({'error': 'Egzemplarz nie jest w statusie zarezerwowanej.'}), 400
+
+    user_id = book_copy.reservations[-1].user_id
+    user = db_session.query(User).get(user_id)
+    if user and user.wants_notifications:
+        book_copy.status = 'do odbioru'
+        db_session.commit()
+
+        new_reminder = Reminder(
+            user_id=user_id,
+            book_id=copy_id,
+            date_of_sending=datetime.now(),
+            type='odbiór'
+        )
+        db_session.add(new_reminder)
+        db_session.commit()
+        return jsonify({'message': 'Książka jest gotowa do odbioru.'})
+    else:
+        return jsonify({'info': 'Użytkownik zrezygnował z otrzymywania powiadomień.'})
 
 
-
-
-@app.route('/user_profile/<int:user_id>', methods=['GET'])
+@app.route('/api/user_profile/<int:user_id>', methods=['GET'])
 @login_required
 def user_profile(user_id):
-    # Jeśli zalogowany użytkownik jest czytelnikiem i próbuje zobaczyć profil innego użytkownika
     if current_user.role == 'czytelnik' and current_user.id != user_id:
-        flash('Nie masz uprawnień do wyświetlenia tego profilu.', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Nie masz uprawnień do wyświetlenia tego profilu.'}), 403
 
-    # Pobranie danych użytkownika z bazy danych
     user = db_session.query(User).get(user_id)
-
     if user is None:
-        flash('Użytkownik nie został znaleziony.', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Użytkownik nie został znaleziony.'}), 404
 
-    # Przekazujemy tylko bezpieczne dane, bez hasła
     user_data = {
+        'id': user.id,
         'name': user.name,
         'surname': user.surname,
         'email': user.email,
         'role': user.role
     }
 
-    return render_template('user_profile.html', user=user_data)
+    return jsonify(user_data)
 
 
-@app.route('/edit_user/<int:user_id>', methods=['GET', 'POST'])
+@app.route('/api/edit_user/<int:user_id>', methods=['POST'])
 @login_required
-def edit_user(user_id):
+def api_edit_user(user_id):
+    # Uproszczona logika dla API
     user = db_session.query(User).get(user_id)
     if user is None:
-        flash('Użytkownik nie został znaleziony.', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Użytkownik nie został znaleziony.'}), 404
+
+    if current_user.id != user_id and current_user.role != 'pracownik':
+        return jsonify({'error': 'Nie masz uprawnień do edycji tego użytkownika.'}), 403
+
+    data = request.get_json()
+    user.name = data['name']
+    user.surname = data['surname']
+
+    # Pracownik nie może edytować swojego emaila
+    if not current_user.role == 'pracownik':
+        user.email = data['email']
+        user.wants_notifications = data.get('wants_notifications', user.wants_notifications)
+
+    if data.get('password'):
+        user.password = generate_password_hash(data['password'])
+
+    db_session.commit()
+    return jsonify({'message': 'Dane użytkownika zostały zaktualizowane.'})
+
+
+@app.route('/api/edit_user/<int:user_id>', methods=['GET'])
+@login_required
+def get_user_data(user_id):
+    user = db_session.query(User).get(user_id)
+    if user is None:
+        return jsonify({'error': 'Użytkownik nie został znaleziony.'}), 404
 
     is_editing_self = current_user.id == user_id
     is_staff = current_user.role == 'pracownik'
     is_target_user_staff = user.role == 'pracownik'
 
-    # Pracownik edytuje siebie
-    if is_staff and is_editing_self:
-        form = EditUserEmployee(obj=user)
-    # Pracownik próbuje edytować innego pracownika
-    elif is_staff and is_target_user_staff:
-        flash('Nie masz uprawnień do edycji innego pracownika.', 'danger')
-        return redirect(url_for('index'))
-    # Pracownik edytuje czytelnika
-    elif is_staff and not is_target_user_staff:
-        form = EditUserFormByStaff(obj=user)
-    # Czytelnik edytuje siebie
-    elif not is_staff and is_editing_self:
-        form = EditUserForm(obj=user)
-    else:
-        flash('Nie masz uprawnień do edycji tego użytkownika.', 'danger')
-        return redirect(url_for('index'))
+    # Sprawdź uprawnienia do edycji profilu
+    if not is_staff and not is_editing_self:
+        return jsonify({'error': 'Nie masz uprawnień do edycji tego użytkownika.'}), 403
 
-    if form.validate_on_submit():
-        user.name = form.name.data
-        user.surname = form.surname.data
+    # Zwróć dane użytkownika w formacie JSON
+    user_data = {
+        'id': user.id,
+        'name': user.name,
+        'surname': user.surname,
+        'email': user.email if not is_target_user_staff else '', # Pracownik nie widzi swojego emaila
+        'role': user.role,
+        'is_editing_self': is_editing_self,
+        'is_staff': is_staff,
+        'is_target_user_staff': is_target_user_staff
+    }
 
-        # Zmiana e-maila i opcjonalnie ustawień powiadomień
-        if not is_target_user_staff:
-            user.email = form.email.data
-            if hasattr(form, 'wants_notifications'):
-                user.wants_notifications = form.wants_notifications.data
-
-        # Zmiana hasła
-        if is_editing_self and form.change_password.data:
-            user.password = generate_password_hash(form.password.data)
-
-        db_session.commit()
-        flash('Dane użytkownika zostały zaktualizowane.', 'success')
-        return redirect(url_for('edit_user', user_id=user_id))
-
-    # Ustaw wartości formularza dla żądania GET
-    if request.method == 'GET':
-        form.name.data = user.name
-        form.surname.data = user.surname
-        if not is_target_user_staff:
-            form.email.data = user.email
-            if hasattr(form, 'wants_notifications'):
-                form.wants_notifications.data = user.wants_notifications
-
-    return render_template(
-        'edit_user.html',
-        form=form,
-        user_id=user_id,
-        is_editing_self=is_editing_self,
-        is_staff=is_staff,
-        is_target_user_staff=is_target_user_staff
-    )
+    return jsonify(user_data)
 
 
-
-
-@app.route('/notifications')
+@app.route('/api/notifications')
 @login_required
-def notifications():
+def api_notifications():
     if current_user.role != 'czytelnik':
-        flash('Tylko czytelnicy mogą przeglądać powiadomienia.', 'warning')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Tylko czytelnicy mogą przeglądać powiadomienia.'}), 403
 
-    # Pobranie powiadomień
     user_notifications = db_session.query(Notification).filter_by(user_id=current_user.id).all()
-    # Pobranie przypomnień
     user_reminders = db_session.query(Reminder).filter_by(user_id=current_user.id).all()
 
-    return render_template('notifications.html', notifications=user_notifications, reminders=user_reminders)
+    # Konwersja danych na format JSON
+    notifications_data = [{'content': n.content, 'date_of_sending': n.date_of_sending.strftime('%Y-%m-%d %H:%M:%S')} for n in user_notifications]
+    reminders_data = [{'type': r.type, 'title': r.book_copy.book.title, 'date_of_sending': r.date_of_sending.strftime('%Y-%m-%d %H:%M:%S')} for r in user_reminders]
+
+    return jsonify({'notifications': notifications_data, 'reminders': reminders_data})
 
 
-
-@app.route('/book_ready_for_pickup/<int:copy_id>', methods=['POST'])
+@app.route('/api/send_notification', methods=['POST'])
 @login_required
-def book_ready_for_pickup(copy_id):
-    if current_user.role == 'pracownik':
-        book_copy = db_session.query(BookCopy).get(copy_id)
-        if book_copy and book_copy.status == 'zarezerwowana':
-            # Pobranie ID użytkownika, który zarezerwował książkę
-            user_id = book_copy.reservations[-1].user_id  # Zakładamy, że ostatnia rezerwacja jest aktualna
-
-            # Sprawdzenie, czy użytkownik chce otrzymywać powiadomienia
-            user = db_session.query(User).get(user_id)
-            if user and user.wants_notifications:
-                book_copy.status = 'do odbioru'
-                db_session.commit()
-
-                # Utworzenie powiadomienia o odbiorze
-                new_reminder = Reminder(
-                    user_id=user_id,
-                    book_id=copy_id,  # Używamy ID egzemplarza książki
-                    date_of_sending=datetime.now(),
-                    type='odbiór'
-                )
-                db_session.add(new_reminder)
-                db_session.commit()
-                flash('Książka jest gotowa do odbioru.', 'success')
-            else:
-                flash('Użytkownik zrezygnował z otrzymywania powiadomień.', 'info')
-        else:
-            flash('Egzemplarz książki nie został znaleziony lub nie jest zarezerwowany.', 'danger')
-    else:
-        flash('Brak uprawnień.', 'danger')
-    return redirect(url_for('manage_books'))
-
-
-@app.route('/send_notification', methods=['GET', 'POST'])
-@login_required
-def send_notification():
+def api_send_notification():
     if current_user.role != 'pracownik':
-        flash('Tylko pracownicy mogą wysyłać powiadomienia.', 'warning')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Tylko pracownicy mogą wysyłać powiadomienia.'}), 403
 
-    form = SendNotificationForm()
-    form.user_id.choices = [(user.id, user.name) for user in db_session.query(User).filter_by(wants_notifications=True).all()]
+    data = request.json
+    user_id = data.get('user_id')
+    content = data.get('content')
 
-    if form.validate_on_submit():
-        user_id = form.user_id.data
-        content = form.content.data
+    # Walidacja danych itp.
 
-        new_notification = Notification(
-            user_id=user_id,
-            content=content
+    new_notification = Notification(user_id=user_id, content=content)
+    db_session.add(new_notification)
+    db_session.commit()
+
+    return jsonify({'message': 'Powiadomienie zostało wysłane.'})
+
+@app.route('/api/users')
+@login_required
+def api_users():
+    users = db_session.query(User).filter_by(wants_notifications=True).all()
+    users_data = [{'id': user.id, 'name': user.name} for user in users]
+    return jsonify(users_data)
+
+
+@app.route('/api/user_debt/<int:user_id>', methods=['GET'])
+@login_required
+def get_user_debt(user_id):
+    # Alias dla Loan
+    loan_alias = aliased(Loan)
+
+    # Złączenie tabel i obliczenie długu
+    total_debt = db_session.query(func.sum(Payment.amount)) \
+        .join(loan_alias, Payment.book_copy_id == loan_alias.book_id) \
+        .join(BookCopy, loan_alias.book_id == BookCopy.id) \
+        .filter(
+        Payment.user_id == user_id,
+        Payment.status == 'oczekująca',
+        loan_alias.status == 'zakończone',
+        loan_alias.return_date.isnot(None)
+    ).scalar()
+
+    # Pobieranie ID płatności
+    payment_ids = db_session.query(Payment.id) \
+        .join(loan_alias, Payment.book_copy_id == loan_alias.book_id) \
+        .join(BookCopy, loan_alias.book_id == BookCopy.id) \
+        .filter(
+        Payment.user_id == user_id,
+        Payment.status == 'oczekująca',
+        loan_alias.status == 'zakończone',
+        loan_alias.return_date.isnot(None)
+    ).all()
+
+    payment_ids = [payment.id for payment in payment_ids]  # Konwersja na listę ID
+
+    return jsonify({'total_debt': total_debt or 0, 'payment_ids': payment_ids})
+
+
+@app.route('/api/update_multiple_payments', methods=['POST'])
+@login_required
+def update_multiple_payments_status():
+    data = request.json
+    print("Otrzymane dane:", data)
+
+    payment_ids = data.get('paymentIds')
+    new_status = data.get('status', 'opłacona')
+
+    if not payment_ids or not isinstance(payment_ids, list) or not all(isinstance(id, int) for id in payment_ids):
+        return jsonify({'error': 'paymentIds musi być listą identyfikatorów (liczb całkowitych).'}), 400
+
+    try:
+        # Pobierz wszystkie płatności, które chcesz zaktualizować
+        payments = db_session.query(Payment).filter(Payment.id.in_(payment_ids)).all()
+
+        if payments:
+            # Zaktualizuj statusy dla wszystkich znalezionych płatności
+            for payment in payments:
+                payment.status = new_status
+
+            db_session.commit()
+            return jsonify({'message': f'Statusy dla {len(payments)} płatności zostały zaktualizowane.'}), 200
+        else:
+            return jsonify({'error': 'Żadna płatność nie została znaleziona dla podanych identyfikatorów.'}), 404
+    except Exception as e:
+        db_session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/get_media', methods=['GET'])
+def get_media():
+    media_items = db_session.query(Media).all()
+    media_data = [
+        {
+            "id": item.id,
+            "media_type": item.media_type,
+            "file_url": item.file_url,
+            "title": item.title,
+            "author": item.author,
+            "publish_year": item.publish_year,
+            "genre": item.genre,
+            "description": item.description
+        } for item in media_items
+    ]
+    return jsonify(media_data)
+
+
+@app.route('/api/upload', methods=['POST'])
+@login_required
+def upload_file():
+    if 'file' not in request.files:
+        flash('Brak pliku w żądaniu')
+        return redirect(request.url)
+
+    file = request.files['file']
+    if file.filename == '':
+        flash('Nie wybrano pliku')
+        return redirect(request.url)
+
+    if file:
+        blob_client = blob_service_client.get_blob_client(container="biblioteka", blob=file.filename)
+        blob_client.upload_blob(file)
+
+        # Odbieranie danych formularza
+        media_type = request.form['media_type']
+        title = request.form['title']
+        author = request.form['author']
+        publish_year = request.form['publish_year']
+        genre = request.form['genre']
+        description = request.form['description']
+
+        # Weryfikacja, czy media_type to 'ebook' lub 'audiobook'
+        if media_type not in ['ebook', 'audiobook']:
+            return jsonify({"message": "Nieprawidłowy typ mediów."}), 400
+
+        # Tworzenie nowego rekordu Media
+        new_media = Media(
+            media_type=media_type,
+            file_url=blob_client.url,
+            title=title,
+            author=author,
+            publish_year=publish_year,
+            genre=genre,
+            description=description
         )
-        db_session.add(new_notification)
+        db_session.add(new_media)
         db_session.commit()
-        flash('Powiadomienie zostało wysłane.', 'success')
-        return redirect(url_for('index'))
 
-    return render_template('send_notification'
-                           '.html', form=form)
+        return jsonify({"message": "Plik został przesłany.", "file_url": blob_client.url})
 
+
+@app.route('/api/download/<filename>', methods=['GET'])
+def download_file(filename):
+    blob_client = blob_service_client.get_blob_client(container="biblioteka", blob=filename)
+    download_stream = blob_client.download_blob()
+
+    # Pobierz typ MIME na podstawie nazwy pliku
+    mimetype = guess_type(filename)[0]
+
+    # Sprawdź, czy typ MIME jest znany, w przeciwnym razie ustaw domyślny
+    if mimetype is None:
+        mimetype = 'application/octet-stream'
+
+    # Ustaw nazwę pliku do pobrania
+    download_name = os.path.basename(filename)
+
+    return send_file(
+        download_stream,
+        mimetype=mimetype,
+        as_attachment=True,
+        download_name=download_name
+    )
 
 
 # To powinno być na samym końcu pliku
