@@ -4,7 +4,8 @@ from celery.schedules import crontab
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
-from database_setup import engine, Loan, Payment, User, Reminder
+from database_setup import engine
+from app.models import *
 from sqlalchemy import select, func, or_
 
 # Konfiguracja Celery
@@ -14,7 +15,7 @@ celery_app.conf.timezone = 'Europe/Warsaw'
 @celery_app.on_after_configure.connect
 def setup_periodic_tasks(sender, **kwargs):
     sender.add_periodic_task(
-        crontab(hour=22, minute=26),
+        crontab(hour=0, minute=0),
         update_loan_statuses_task.s(),
     )
 
@@ -58,26 +59,26 @@ def add_overdue_payments():
         Loan.status == 'książka przetrzymana'
         )
         for loan in session.execute(overdue_loans).scalars():
-            # Oblicz opłatę
+            # Obliczanie opłaty
             fine_amount = calculate_fine(loan.due_date, datetime.now())
-            # Sprawdź, czy istnieje już opłata dla tego wypożyczenia
+            # Sprawdzenie czy istnieje już opłata dla tego wypożyczenia
             existing_payment = select(func.count(Payment.id)).where(
                 Payment.user_id == loan.user_id,
-                Payment.book_copy_id == loan.book_id,  # Zaktualizowano
+                Payment.book_copy_id == loan.book_id,
                 Payment.status != 'opłacona'
             )
 
             if session.execute(existing_payment).scalar() == 0:
-                # Stwórz nową opłatę, jeśli nie istnieje
+                # Stworzenie nowej opłaty, jeśli nie istnieje
                 new_payment = Payment(
                     user_id=loan.user_id,
-                    book_copy_id=loan.book_id,  # Zaktualizowano
+                    book_copy_id=loan.book_id,
                     amount=fine_amount,
                     status='oczekująca'
                 )
                 session.add(new_payment)
 
-            # Zatwierdź zmiany
+            # Zatwierdzenie zmian
         session.commit()
 
 
@@ -107,10 +108,9 @@ def create_payment_notifications():
 
 def create_return_reminders():
     with Session(engine) as session:
-        # Oblicz datę, która jest 5 dni od teraz
         five_days_from_now = datetime.now() + timedelta(days=5)
 
-        # Znajdź wszystkie wypożyczenia, których termin zwrotu jest w ciągu najbliższych 5 dni
+        # Znajdowanie wszystkich wypożyczeń, których termin zwrotu jest w ciągu najbliższych 5 dni
         loans_due_soon = select(Loan).where(
             Loan.due_date <= five_days_from_now,
             Loan.status == 'w trakcie'

@@ -1,20 +1,20 @@
-# Użyj oficjalnego obrazu Pythona jako obrazu bazowego
+#Oficjalny obraz Pythona jako obraz bazowegy
 FROM python:3.8-slim
 
-# Ustaw katalog roboczy w kontenerze
+# Ustawienie katalogu roboczego w kontenerze
 WORKDIR /code
 
-# Skopiuj plik requirements.txt do katalogu roboczego w kontenerze
+# Skopiowanie pliku requirements.txt do katalogu roboczego w kontenerze
 COPY requirements.txt .
 
-# Zainstaluj zależności za pomocą pip
+# Instalowanie zależności za pomocą pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Skopiuj zawartość lokalnego katalogu src do katalogu roboczego w kontenerze
+# Kopiowanie zawartość lokalnego katalogu src do katalogu roboczego w kontenerze
 COPY . .
 
-# Poinformuj Docker, że kontener nasłuchuje na porcie 5000 w czasie wykonywania
+# Kontener nasłuchuje na porcie 5000 w czasie wykonywania
 EXPOSE 5000
 
-# Uruchom app.py przy starcie kontenera
-CMD ["python", "app.py"]
+# Uruchomienie flask_app.py przy starcie kontenera
+CMD ["python", "flask_app.py"]

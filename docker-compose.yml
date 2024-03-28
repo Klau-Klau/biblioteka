@@ -2,7 +2,7 @@ version: "3.7"
 services:
   flask_app:
     build: .
-    command: python app.py
+    command: python flask_app.py
     volumes:
       - .:/code
     ports:
