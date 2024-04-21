@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 def create_app():
     from app.routes.api import api_blueprint
     # Inicjalizacja klienta usługi Azure Blob Storage
-    connection_string = "DefaultEndpointsProtocol=https;AccountName=bibliotekaklaudia;AccountKey=KW+qSFOSstEbbeDs4QrZgSHHYkicem3ZG2iJr2QQ3Rv5DqAmIuqjYN1xBLR/FBP0uM1PYMrSPS7q+AStzSH0Ig==;EndpointSuffix=core.windows.net"
+    connection_string = "DefaultEndpointsProtocol=https;AccountName=bibliotekaklaudia;AccountKey=;EndpointSuffix=core.windows.net"
     blob_service_client = BlobServiceClient.from_connection_string(connection_string)
 
 
